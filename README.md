@@ -86,7 +86,7 @@ See: `docs/ARCHITECTURE.md`
 ## ✅ Milestones
 
 - [x] M0: GitHub repo setup (docs/templates/CI skeleton)
-- [ ] M1: Backend + frontend scaffold + local Postgres
+- [x] M1: Backend + frontend scaffold + local Postgres
 - [ ] M2: Tenant + membership + tenant scoping middleware
 - [ ] M3: Customers + search API + UI
 - [ ] M4: Orders + items + tagging + printing
