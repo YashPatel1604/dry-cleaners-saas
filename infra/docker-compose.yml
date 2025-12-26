@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16
+    container_name: drycleaners_db
+    environment:
+      POSTGRES_DB: drycleaners
+      POSTGRES_USER: drycleaners
+      POSTGRES_PASSWORD: drycleaners
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - drycleaners_pgdata:/var/lib/postgresql/data
+
+volumes:
+  drycleaners_pgdata:
