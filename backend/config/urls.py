@@ -14,16 +14,36 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+from django.http import JsonResponse
 from django.contrib import admin
 from django.urls import path, include
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-
+    path("api/auth/", include("accounts.urls")),
+    path("api/tenants/", include("tenants.urls")),
+    path("api/", include("customers.urls")),
+    path("api/", include("orders.urls")),
+    path("api/", include("inventory.urls")),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"),
          name="swagger-ui"),
+]
 
-    path("api/auth/", include("accounts.urls")),
+
+# config/urls.py (or any urls module)
+
+
+def debug_headers(request):
+    return JsonResponse({
+        "path": request.path,
+        "META_HTTP_X_TENANT": request.META.get("HTTP_X_TENANT"),
+        "headers_X_Tenant": request.headers.get("X-Tenant"),
+        "all_http_headers": {k: v for k, v in request.META.items() if k.startswith("HTTP_")},
+    })
+
+
+urlpatterns += [
+    path("debug/headers/", debug_headers),
 ]

@@ -10,11 +10,18 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+from datetime import timedelta
 from pathlib import Path
 import environ
 BASE_DIR = Path(__file__).resolve().parent.parent
 env = environ.Env(DEBUG=(bool, False))
 environ.Env.read_env(BASE_DIR / ".env")
+
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(hours=12),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+}
 
 
 # Quick-start development settings - unsuitable for production
@@ -45,8 +52,10 @@ INSTALLED_APPS = [
     "tenants",
     "accounts",
     "customers",
-    "orders",
+    "orders.apps.OrdersConfig",
     "reports",
+    "inventory"
+
 ]
 
 
@@ -54,6 +63,7 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
+    "tenants.middleware.TenantMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -152,5 +162,44 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "Dry Cleaners SaaS API",
-    "VERSION": "1.0.0",
+    "DESCRIPTION": "Multi-tenant API (location-based) for inventory, orders, billing, and reporting.",
+    "VERSION": "0.1.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
+
+    # JWT + tenant header required
+    "SECURITY": [
+        {"bearerAuth": []},
+        {"tenantHeader": []},
+    ],
+
+    "APPEND_COMPONENTS": {
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+            },
+            "tenantHeader": {
+                "type": "apiKey",
+                "in": "header",
+                "name": "X-Tenant",
+                "description": "Tenant slug (location). Example: irvine-main",
+            },
+        }
+    },
+
+    # Swagger UI: automatically attaches X-Tenant from browser storage
+    "SWAGGER_UI_SETTINGS": {
+        "persistAuthorization": True,
+        "requestInterceptor": """
+        (request) => {
+            const tenant = localStorage.getItem('tenant');
+            if (tenant) {
+                request.headers['X-Tenant'] = tenant;
+            }
+            return request;
+        }
+        """,
+    },
 }
