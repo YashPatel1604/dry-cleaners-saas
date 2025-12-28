@@ -19,8 +19,14 @@ class Order(models.Model):
     subtotal_cents = models.PositiveIntegerField(default=0)
     tax_cents = models.PositiveIntegerField(default=0)
     total_cents = models.PositiveIntegerField(default=0)
-    paid_cents = models.PositiveIntegerField(default=0)
+    paid_cents = models.IntegerField(default=0)
+    settled_at = models.DateTimeField(null=True, blank=True)
 
+    settled_total_cents = models.IntegerField(null=True, blank=True)
+    settled_paid_cents = models.IntegerField(null=True, blank=True)
+    settled_change_cents = models.IntegerField(null=True, blank=True)
+    settled_balance_due_cents = models.IntegerField(null=True, blank=True)
+    
     created_at = models.DateTimeField(auto_now_add=True)
 
 

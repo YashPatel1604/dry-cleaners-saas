@@ -1,5 +1,8 @@
+# orders/serializers.py
 from rest_framework import serializers
 from .models import Order, OrderItem
+from payments.models import Payment, Adjustment
+from customers.models import Customer
 
 ORDER_STATUS_TRANSITIONS = {
     "RECEIVED": {"IN_PROGRESS", "CANCELLED"},
@@ -23,6 +26,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "tax_cents",
             "total_cents",
             "paid_cents",
+            "settled_at",
             "created_at",
         ]
         read_only_fields = [
@@ -32,10 +36,10 @@ class OrderSerializer(serializers.ModelSerializer):
             "tax_cents",
             "total_cents",
             "paid_cents",
+            "settled_at",
         ]
 
     def validate(self, attrs):
-        # Only enforce transitions on update
         instance = getattr(self, "instance", None)
         if not instance:
             return attrs
@@ -79,7 +83,6 @@ class OrderItemSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        # if quantity or item changes, recompute prices
         item = validated_data.get("item", instance.item)
         quantity = validated_data.get("quantity", instance.quantity)
 
@@ -87,3 +90,127 @@ class OrderItemSerializer(serializers.ModelSerializer):
         validated_data["line_total_cents"] = quantity * item.unit_price_cents
 
         return super().update(instance, validated_data)
+
+
+# -----------------------------
+# Receipt serializers
+# -----------------------------
+
+class ReceiptCustomerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Customer
+        fields = ["id", "name", "phone", "email"]
+
+
+class ReceiptItemSerializer(serializers.ModelSerializer):
+    item_name = serializers.CharField(source="item.name", read_only=True)
+    sku = serializers.CharField(source="item.sku", read_only=True, default="")
+
+    class Meta:
+        model = OrderItem
+        fields = [
+            "id",
+            "item",
+            "item_name",
+            "sku",
+            "quantity",
+            "unit_price_cents",
+            "line_total_cents",
+        ]
+
+
+class ReceiptPaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Payment
+        fields = [
+            "id",
+            "method",
+            "status",
+            "direction",
+            "amount_cents",
+            "reference",
+            "note",
+            "created_at",
+        ]
+
+
+class ReceiptAdjustmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Adjustment
+        fields = [
+            "id",
+            "kind",
+            "status",
+            "direction",
+            "amount_cents",
+            "reference",
+            "note",
+            "created_at",
+        ]
+
+
+class OrderReceiptSerializer(serializers.ModelSerializer):
+    customer = ReceiptCustomerSerializer(read_only=True)
+    items = ReceiptItemSerializer(many=True, read_only=True)
+    payments = ReceiptPaymentSerializer(many=True, read_only=True)
+
+    # ✅ new (if not already)
+    adjustments = serializers.SerializerMethodField()
+    adjustments_net_cents = serializers.SerializerMethodField()
+    net_paid_cents = serializers.SerializerMethodField()
+
+    balance_due_cents = serializers.SerializerMethodField()
+    change_due_cents = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = [
+            "id",
+            "status",
+            "due_at",
+            "notes",
+            "created_at",
+            "settled_at",
+            "customer",
+            "items",
+            "subtotal_cents",
+            "tax_cents",
+            "total_cents",
+            "paid_cents",
+            "adjustments_net_cents",
+            "net_paid_cents",
+            "balance_due_cents",
+            "change_due_cents",
+            "payments",
+            "adjustments",
+        ]
+
+    def get_adjustments(self, obj):
+        # assumes related_name="adjustments" on Adjustment.order FK
+        qs = getattr(obj, "adjustments", None)
+        if qs is None:
+            return []
+        return ReceiptAdjustmentSerializer(qs.all(), many=True).data
+
+    def get_adjustments_net_cents(self, obj):
+        qs = getattr(obj, "adjustments", None)
+        if qs is None:
+            return 0
+        net = 0
+        for a in qs.all():
+            if a.status != Adjustment.Status.APPLIED:
+                continue
+            if a.direction == Adjustment.Direction.IN:
+                net += int(a.amount_cents)
+            else:
+                net -= int(a.amount_cents)
+        return net
+
+    def get_net_paid_cents(self, obj):
+        return int(obj.paid_cents) + int(self.get_adjustments_net_cents(obj))
+
+    def get_balance_due_cents(self, obj):
+        return max(int(obj.total_cents) - int(self.get_net_paid_cents(obj)), 0)
+
+    def get_change_due_cents(self, obj):
+        return max(int(self.get_net_paid_cents(obj)) - int(obj.total_cents), 0)
