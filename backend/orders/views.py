@@ -4,15 +4,17 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
-
-
 from django.utils import timezone
+
 from customers.models import Customer, normalize_phone_us
 
-
-from customers.models import Customer
-from .models import Order, OrderItem
-from .serializers import OrderSerializer, OrderItemSerializer, OrderReceiptSerializer, ReceiptAdjustmentSerializer
+from .models import Order, OrderItem, OrderStatusEvent
+from .serializers import (
+    OrderSerializer,
+    OrderItemSerializer,
+    OrderReceiptSerializer,
+    OrderStatusEventSerializer,
+)
 from .services import recalc_order_totals
 
 
@@ -31,7 +33,67 @@ class OrderViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"customer": "Customer does not belong to this tenant."})
 
-        serializer.save(tenant=self.request.tenant)
+        with transaction.atomic():
+            order = serializer.save(
+                tenant=self.request.tenant,
+                received_at=timezone.now(),  # ✅ new field on Order
+            )
+
+            # optional but recommended: timeline starts here
+            OrderStatusEvent.objects.create(
+                tenant=self.request.tenant,
+                order=order,
+                from_status=order.status,
+                to_status=order.status,
+                changed_by=self.request.user if self.request.user.is_authenticated else None,
+                note="Order created",
+            )
+
+    def perform_update(self, serializer):
+        """
+        Logs every status change (immutable) and sets lifecycle timestamps on first entry to a state.
+        Done under transaction + row lock to avoid race conditions.
+        """
+        with transaction.atomic():
+            # lock the row to serialize concurrent updates
+            locked = Order.objects.select_for_update().get(
+                pk=serializer.instance.pk,
+                tenant=self.request.tenant,
+            )
+
+            old_status = locked.status
+            new_status = serializer.validated_data.get("status", old_status)
+
+            order = serializer.save()
+
+            if old_status != new_status:
+                # ✅ audit event
+                OrderStatusEvent.objects.create(
+                    tenant=self.request.tenant,
+                    order=order,
+                    from_status=old_status,
+                    to_status=new_status,
+                    changed_by=self.request.user if self.request.user.is_authenticated else None,)
+
+                # ✅ per-state timestamp (set only once)
+                now = timezone.now()
+                updates = []
+
+                if new_status == "IN_PROGRESS" and order.in_progress_at is None:
+                    order.in_progress_at = now
+                    updates.append("in_progress_at")
+                elif new_status == "READY" and order.ready_at is None:
+                    order.ready_at = now
+                    updates.append("ready_at")
+                elif new_status == "COMPLETED" and order.completed_at is None:
+                    order.completed_at = now
+                    updates.append("completed_at")
+                elif new_status == "CANCELLED" and order.cancelled_at is None:
+                    order.cancelled_at = now
+                    updates.append("cancelled_at")
+
+                if updates:
+                    order.save(update_fields=updates)
 
     @action(detail=True, methods=["get"])
     def receipt(self, request, pk=None):
@@ -122,6 +184,23 @@ class OrderViewSet(viewsets.ModelViewSet):
         order.refresh_from_db()
         data = OrderReceiptSerializer(order).data
         return Response(data)
+
+    @action(detail=True, methods=["get"], url_path="status-events")
+    def status_events(self, request, pk=None):
+        """
+        GET /api/orders/{id}/status-events/
+        Returns the immutable timeline of status transitions.
+        """
+        order = Order.objects.filter(tenant=request.tenant, pk=pk).first()
+        if not order:
+            raise ValidationError({"order": "Order not found in this tenant."})
+
+        qs = OrderStatusEvent.objects.filter(
+            tenant=request.tenant,
+            order=order,
+        ).order_by("created_at")
+
+        return Response(OrderStatusEventSerializer(qs, many=True).data)
 
     @action(detail=True, methods=["post"], url_path="set_customer")
     def set_customer(self, request, pk=None):

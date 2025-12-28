@@ -1,8 +1,9 @@
 # orders/serializers.py
 from rest_framework import serializers
-from .models import Order, OrderItem
+from .models import Order, OrderItem, OrderStatusEvent
 from payments.models import Payment, Adjustment
 from customers.models import Customer
+
 
 ORDER_STATUS_TRANSITIONS = {
     "RECEIVED": {"IN_PROGRESS", "CANCELLED"},
@@ -28,6 +29,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "paid_cents",
             "settled_at",
             "created_at",
+            "received_at", "in_progress_at", "ready_at", "completed_at", "cancelled_at",
         ]
         read_only_fields = [
             "id",
@@ -36,7 +38,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "tax_cents",
             "total_cents",
             "paid_cents",
-            "settled_at",
+            "settled_at", "received_at", "in_progress_at", "ready_at", "completed_at", "cancelled_at",
         ]
 
     def validate(self, attrs):
@@ -44,10 +46,13 @@ class OrderSerializer(serializers.ModelSerializer):
         if not instance:
             return attrs
 
+        if instance.settled_at and "status" in attrs and attrs["status"] != instance.status:
+            raise serializers.ValidationError(
+                {"status": "Cannot change status after settlement."})
+
         if "status" in attrs:
             old = instance.status
             new = attrs["status"]
-
             if old != new:
                 allowed = ORDER_STATUS_TRANSITIONS.get(old, set())
                 if new not in allowed:
@@ -90,6 +95,25 @@ class OrderItemSerializer(serializers.ModelSerializer):
         validated_data["line_total_cents"] = quantity * item.unit_price_cents
 
         return super().update(instance, validated_data)
+
+
+class OrderStatusEventSerializer(serializers.ModelSerializer):
+    changed_by_email = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OrderStatusEvent
+        fields = [
+            "id",
+            "from_status",
+            "to_status",
+            "changed_by_email",
+            "note",
+            "created_at",
+        ]
+
+    def get_changed_by_email(self, obj):
+        u = obj.changed_by
+        return getattr(u, "email", None) if u else None
 
 
 # -----------------------------
