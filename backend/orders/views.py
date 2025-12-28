@@ -6,7 +6,9 @@ from rest_framework.exceptions import ValidationError
 from django.db import transaction
 
 
-from django.utils import timezone  # ✅ ADD THIS
+from django.utils import timezone
+from customers.models import Customer, normalize_phone_us
+
 
 from customers.models import Customer
 from .models import Order, OrderItem
@@ -120,6 +122,78 @@ class OrderViewSet(viewsets.ModelViewSet):
         order.refresh_from_db()
         data = OrderReceiptSerializer(order).data
         return Response(data)
+
+    @action(detail=True, methods=["post"], url_path="set_customer")
+    def set_customer(self, request, pk=None):
+        """
+        POST /api/orders/{id}/set_customer { "customer_id": "..." }
+        """
+        customer_id = request.data.get("customer_id")
+        if not customer_id:
+            raise ValidationError({"customer_id": "Required"})
+
+        order = Order.objects.filter(tenant=request.tenant, pk=pk).first()
+        if not order:
+            raise ValidationError({"order": "Order not found in this tenant."})
+
+        customer = Customer.objects.filter(
+            tenant=request.tenant, pk=customer_id).first()
+        if not customer:
+            raise ValidationError(
+                {"customer": "Customer not found in this tenant."})
+
+        order.customer = customer
+        order.save(update_fields=["customer"])
+
+        return Response(OrderSerializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="set_customer_by_phone")
+    def set_customer_by_phone(self, request, pk=None):
+        """
+        POST /api/orders/{id}/set_customer_by_phone
+        {
+          "phone": "...",
+          "name": "...",   (required if creating)
+          "email": "...",
+          "notes": "..."
+        }
+        """
+        raw_phone = (request.data.get("phone") or "").strip()
+        if not raw_phone:
+            raise ValidationError({"phone": "Required"})
+
+        phone_e164 = normalize_phone_us(raw_phone)
+        if not phone_e164:
+            raise ValidationError(
+                {"phone": "Invalid/unsupported phone format"})
+
+        order = Order.objects.filter(tenant=request.tenant, pk=pk).first()
+        if not order:
+            raise ValidationError({"order": "Order not found in this tenant."})
+
+        customer = Customer.objects.filter(
+            tenant=request.tenant,
+            phone_e164=phone_e164,
+        ).first()
+
+        if not customer:
+            name = (request.data.get("name") or "").strip()
+            if not name:
+                raise ValidationError(
+                    {"name": "Name is required to create a new customer."})
+
+            customer = Customer.objects.create(
+                tenant=request.tenant,
+                name=name,
+                phone=raw_phone,
+                email=(request.data.get("email") or "").strip(),
+                notes=(request.data.get("notes") or "").strip(),
+            )
+
+        order.customer = customer
+        order.save(update_fields=["customer"])
+
+        return Response(OrderSerializer(order).data)
 
 
 class OrderItemViewSet(viewsets.ModelViewSet):
