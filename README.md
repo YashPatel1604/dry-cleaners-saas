@@ -1,102 +1,129 @@
 # Dry Cleaners SaaS (Location-Based POS, Inventory, Billing)
 
-A **multi-tenant (one tenant = one store location)** dry cleaner management platform built with **Django REST Framework**, **PostgreSQL**, and **React (Vite)** using **Tailwind + shadcn/ui**.  
-Designed as a subscription SaaS product with strong data isolation, role-based access, and scalable deployment patterns.
+A **multi-tenant (one tenant = one store location)** dry cleaner management platform built with **Django REST Framework**, **PostgreSQL**, and **React (Vite)** using **Tailwind + shadcn/ui**.
 
-## localhosts
+Designed as a production-grade SaaS backend with **strict tenant isolation**, **auditable financial flows**, and **operator-first workflows**.
 
-DB (Docker): 127.0.0.1:5433
-Backend: http://127.0.0.1:8000
-API Docs: http://127.0.0.1:8000/api/docs/
-Frontend: http://localhost:5173
+---
 
-## Why this exists
+## Local URLs
 
-Dry cleaners often rely on paper tickets, spreadsheets, or outdated POS systems. This project focuses on:
+- **Database (Docker)**: `127.0.0.1:5433`
+- **Backend API**: http://127.0.0.1:8000
+- **API Docs (Swagger)**: http://127.0.0.1:8000/api/docs/
+- **Frontend**: http://localhost:5173
 
-- fast counter workflow (drop-off / pickup)
-- item-level tracking and status updates
-- accurate billing + payment audit trail
-- store-level tenant isolation to support SaaS subscriptions
+---
 
-## ✨ Features (Planned / In Progress)
+## Why This Exists
+
+Most dry cleaners still rely on paper tickets, spreadsheets, or outdated POS systems.
+
+This project focuses on:
+
+- Fast counter workflow (drop-off → processing → pickup)
+- Item-level tracking with lifecycle timestamps
+- Accurate billing with immutable audit trails
+- Store-level tenant isolation for SaaS scalability
+
+---
+
+## ✨ Features (Implemented)
 
 ### SaaS & Security
+- ✅ Tenant isolation (one store = one tenant)
+- ✅ Tenant resolved via middleware (`X-Tenant`)
+- 🔜 RBAC (Owner / Manager / Staff)
 
-- [ ] Tenant isolation (one store = one tenant)
-- [ ] Membership + roles (Owner / Manager / Cashier / Staff)
-- [ ] Audit log for sensitive actions (payments, refunds, overrides)
+### Customer Management
+- ✅ Customer profiles
+- ✅ Phone normalization + fast lookup
+- ✅ Full order history per customer
+- ✅ Attach customer to order by ID or phone
 
-### Core Operations
+### Orders & Lifecycle
+- ✅ Orders + OrderItems
+- ✅ Status transitions with validation
+- ✅ Immutable status audit log
+- ✅ Lifecycle timestamps:
+  - received_at
+  - in_progress_at
+  - ready_at
+  - completed_at
+  - picked_up_at
+  - cancelled_at
 
-- [ ] Customer profiles + phone search
-- [ ] Drop-off order creation (items, notes, promised date)
-- [ ] Tag codes for each item (barcode/QR-friendly)
-- [ ] Item lifecycle: Received → Cleaning → QC → Ready → Picked up
-- [ ] Pickup workflow with partial pickup support
+### Pickup Workflow (v0.3.2)
+- ✅ READY → PICKED_UP flow
+- ✅ Prevent invalid post-pickup transitions
+- ✅ Ready-but-unpaid queue
+- ✅ Explicit pickup endpoint
 
-### Billing & Reporting
+### Billing & Accounting
+- ✅ Itemized receipts
+- ✅ Payments (create / void / refund)
+- ✅ Post-settlement adjustments
+- ✅ Settlement snapshots (total / paid / change / balance)
+- ✅ Idempotent settlement
+- ✅ Transaction-safe math
 
-- [ ] Payments: deposit / final / refund (transactional)
-- [ ] Daily totals + payment method breakdown
-- [ ] Open orders aging report
-
-### Printing
-
-- [ ] Printable receipts + item labels (browser print MVP)
-
-### Subscription Rails (later)
-
-- [ ] Tenant plan + billing_status fields (Stripe integration later)
+---
 
 ## 🧱 Tech Stack
 
-**Backend**
-
-- Django + Django REST Framework
+### Backend
+- Django 4.x
+- Django REST Framework
 - PostgreSQL
-- JWT auth (SimpleJWT)
-- OpenAPI/Swagger (drf-spectacular)
+- SimpleJWT
+- drf-spectacular (OpenAPI)
 
-**Frontend**
-
-- React (Vite) + TypeScript
+### Frontend
+- React (Vite)
+- TypeScript
 - Tailwind CSS
 - shadcn/ui
 - TanStack Query
 
-**Dev**
-
+### Dev & Ops
 - Docker Compose (local Postgres)
-- GitHub Actions CI (lint/test/build)
+- GitHub Actions CI
+- Tenant-safe middleware architecture
+
+---
 
 ## 🗺️ Architecture (High Level)
 
-- **Tenant = one physical store location**
-- Tenant context is resolved via header in dev and subdomain in production
-- Tenant-owned data is always scoped server-side (no `tenant_id` accepted from client)
-- Payments and pickup operations are transactional and auditable
+- **Tenant = physical store**
+- Tenant context resolved server-side
+- Client never sends `tenant_id`
+- Financial operations are transactional + auditable
+- Status changes are immutable events
 
 See: `docs/ARCHITECTURE.md`
 
-## 🚀 Getting Started (Local Dev)
+---
 
-> Coming soon. This section will be filled in as the scaffold lands.
+## 🚀 Getting Started (Local)
+
+Coming soon.
+
+---
 
 ## ✅ Milestones
 
-- [x] M0: GitHub repo setup (docs/templates/CI skeleton)
-- [x] M1: Backend + frontend scaffold + local Postgres
-- [ ] M2: Tenant + membership + tenant scoping middleware
-- [ ] M3: Customers + search API + UI
-- [ ] M4: Orders + items + tagging + printing
-- [ ] M5: Pickup + payments + reports
-- [ ] M6: Deploy staging + production
+- ✅ **M0**: Repo + CI scaffold
+- ✅ **M1**: Backend + frontend scaffold
+- ✅ **M2**: Tenant isolation + middleware
+- ✅ **M3**: Customers + search + order history
+- ✅ **M4**: Orders + items + receipts
+- ✅ **M5**: Payments + settlement + pickup
+- 🔜 **M6**: Dashboards & metrics
+- 🔜 **M7**: RBAC
+- 🔜 **M8**: Deploy staging + prod
 
-## 📸 Screenshots
-
-> Add screenshots/GIFs here as features land.
+---
 
 ## 📄 License
 
-No license selected yet (SaaS-oriented). Can be added later.
+No license selected yet (SaaS-oriented).
