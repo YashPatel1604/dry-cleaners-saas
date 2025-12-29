@@ -238,4 +238,29 @@ class OrderReceiptSerializer(serializers.ModelSerializer):
         return max(int(obj.total_cents) - int(self.get_net_paid_cents(obj)), 0)
 
     def get_change_due_cents(self, obj):
-        return max(int(self.get_net_paid_cents(obj)) - int(obj.total_cents), 0)
+        """
+        Option A (explicit OUT for change):
+        - If there is a captured OUT cash payment (change/refund), then "change due" is 0
+            because the drawer already recorded the payout.
+        - Otherwise, show overpayment (net_paid - total) so the counter knows change is owed.
+
+        Note: "net_paid_cents" already includes adjustments (post-settlement), so change due
+        will also reflect those if you ever use them.
+        """
+        # If we already recorded an OUT payment, we don't want the receipt to still say "change due"
+        try:
+            payments_qs = getattr(obj, "payments", None)
+            if payments_qs is not None:
+                has_captured_out = payments_qs.filter(
+                    status=Payment.Status.CAPTURED,
+                    direction=Payment.Direction.OUT,
+                ).exists()
+                if has_captured_out:
+                    return 0
+        except Exception:
+            pass
+
+        # Otherwise show the overpayment amount (customer handed more than total)
+        net_paid = int(self.get_net_paid_cents(obj))
+        total = int(obj.total_cents)
+        return max(net_paid - total, 0)

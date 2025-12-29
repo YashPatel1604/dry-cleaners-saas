@@ -47,6 +47,7 @@ class Order(models.Model):
             models.Index(fields=["tenant", "created_at"]),
             models.Index(fields=["tenant", "status", "created_at"]),
             models.Index(fields=["tenant", "customer", "created_at"]),
+            models.Index(fields=["tenant", "status", "ready_at"]),
         ]
 
 

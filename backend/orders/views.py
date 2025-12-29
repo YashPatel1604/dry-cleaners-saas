@@ -1,14 +1,17 @@
 # orders/views.py
-from rest_framework import viewsets, permissions
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError
+from datetime import timedelta, datetime
+
 from django.db import transaction
 from django.utils import timezone
-from payments.models import Adjustment
 
+from rest_framework import viewsets, permissions
+from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
 
 from customers.models import Customer, normalize_phone_us
+from payments.models import Payment, Adjustment
+from payments.serializers import PaymentSerializer
 
 from .models import Order, OrderItem, OrderStatusEvent
 from .serializers import (
@@ -18,6 +21,49 @@ from .serializers import (
     OrderStatusEventSerializer,
 )
 from .services import recalc_order_totals
+from django.db import IntegrityError
+from django.db.models import Q
+
+
+def default_due_at_for_tenant(tenant, now=None):
+    """
+    Compute default pickup promise using tenant settings:
+    localdate(now) + default_turnaround_days at (default_ready_hour:default_ready_minute).
+    """
+    if now is None:
+        now = timezone.now()
+
+    due_day = timezone.localdate(
+        now) + timedelta(days=int(tenant.default_turnaround_days or 0))
+
+    hour = int(getattr(tenant, "default_ready_hour", 17) or 17)
+    minute = int(getattr(tenant, "default_ready_minute", 0) or 0)
+
+    tz = timezone.get_current_timezone()
+    return timezone.make_aware(
+        datetime(due_day.year, due_day.month, due_day.day, hour, minute, 0),
+        tz
+    )
+
+
+def compute_net_paid_and_balance(order):
+    """
+    Returns (net_paid_cents, balance_due_cents) where net_paid includes APPLIED adjustments.
+    """
+    recalc_order_totals(order)
+    order.refresh_from_db(fields=["total_cents", "paid_cents"])
+
+    net_paid = int(order.paid_cents)
+    for a in getattr(order, "adjustments").all():
+        if a.status != Adjustment.Status.APPLIED:
+            continue
+        if a.direction == Adjustment.Direction.IN:
+            net_paid += int(a.amount_cents)
+        else:
+            net_paid -= int(a.amount_cents)
+
+    balance_due = max(int(order.total_cents) - net_paid, 0)
+    return net_paid, balance_due
 
 
 class OrderViewSet(viewsets.ModelViewSet):
@@ -36,12 +82,16 @@ class OrderViewSet(viewsets.ModelViewSet):
                 {"customer": "Customer does not belong to this tenant."})
 
         with transaction.atomic():
+            due_at = serializer.validated_data.get(
+                "due_at") or default_due_at_for_tenant(self.request.tenant)
+
             order = serializer.save(
                 tenant=self.request.tenant,
-                received_at=timezone.now(),  # ✅ new field on Order
+                received_at=timezone.now(),
+                due_at=due_at,
             )
 
-            # optional but recommended: timeline starts here
+            # timeline starts here
             OrderStatusEvent.objects.create(
                 tenant=self.request.tenant,
                 order=order,
@@ -57,7 +107,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         Done under transaction + row lock to avoid race conditions.
         """
         with transaction.atomic():
-            # lock the row to serialize concurrent updates
             locked = Order.objects.select_for_update().get(
                 pk=serializer.instance.pk,
                 tenant=self.request.tenant,
@@ -69,15 +118,14 @@ class OrderViewSet(viewsets.ModelViewSet):
             order = serializer.save()
 
             if old_status != new_status:
-                # ✅ audit event
                 OrderStatusEvent.objects.create(
                     tenant=self.request.tenant,
                     order=order,
                     from_status=old_status,
                     to_status=new_status,
-                    changed_by=self.request.user if self.request.user.is_authenticated else None,)
+                    changed_by=self.request.user if self.request.user.is_authenticated else None,
+                )
 
-                # ✅ per-state timestamp (set only once)
                 now = timezone.now()
                 updates = []
 
@@ -96,6 +144,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 elif new_status == "PICKED_UP" and order.picked_up_at is None:
                     order.picked_up_at = now
                     updates.append("picked_up_at")
+
                 if updates:
                     order.save(update_fields=updates)
 
@@ -116,11 +165,280 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         recalc_order_totals(order)
         order.refresh_from_db(
-            fields=["subtotal_cents", "tax_cents",
-                    "total_cents", "paid_cents", "settled_at"]
-        )
+            fields=["subtotal_cents", "tax_cents", "total_cents", "paid_cents", "settled_at"])
 
         return Response(OrderReceiptSerializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="pickup-payment")
+    def pickup_payment(self, request, pk=None):
+        """
+        POST /api/orders/{id}/pickup-payment/
+        Records a payment at pickup time.
+        - Allows overpay ONLY for CASH, and auto-creates an OUT payment for change.
+        - Idempotent by reference if provided (tenant-scoped).
+        Body:
+        {
+        "amount_cents": 1234,
+        "method": "CASH",
+        "reference": "pickup-001",
+        "note": "..."
+        }
+        """
+        order = (
+            Order.objects.filter(tenant=request.tenant, pk=pk)
+            .select_related("customer")
+            .prefetch_related("adjustments", "payments", "items__item")
+            .first()
+        )
+        if not order:
+            raise ValidationError({"order": "Order not found in this tenant."})
+
+        # 🔒 settlement lock
+        if getattr(order, "settled_at", None) is not None:
+            raise ValidationError(
+                {"order": "Order is settled and cannot accept payments."})
+
+        # policy: only allow pickup payments when order is READY/COMPLETED
+        if order.status not in ("READY", "COMPLETED"):
+            raise ValidationError(
+                {"order": "Pickup payments only allowed for READY/COMPLETED orders."})
+
+        # validate fields
+        try:
+            amount_cents = int(request.data.get("amount_cents"))
+        except Exception:
+            raise ValidationError({"amount_cents": "Required integer."})
+
+        if amount_cents <= 0:
+            raise ValidationError({"amount_cents": "Must be > 0."})
+
+        method = request.data.get("method")
+        if method not in Payment.Method.values:
+            raise ValidationError(
+                {"method": f"Invalid. Allowed: {list(Payment.Method.values)}"})
+
+        reference = (request.data.get("reference") or "").strip()
+        note = request.data.get("note") or ""
+
+        # compute current balance due (considers APPLIED adjustments)
+        _, balance_due = compute_net_paid_and_balance(order)
+
+        # Non-cash cannot overpay
+        if method != Payment.Method.CASH and amount_cents > balance_due:
+            raise ValidationError(
+                {"amount_cents": f"Payment exceeds balance due ({balance_due})."})
+
+        # If cash overpay, compute change
+        change_cents = 0
+        if method == Payment.Method.CASH:
+            change_cents = max(amount_cents - balance_due, 0)
+
+            # IMPORTANT: if we're going to create a change OUT and client retries,
+            # we need deterministic idempotency for BOTH records.
+            if change_cents > 0 and not reference:
+                raise ValidationError(
+                    {"reference": "Required when CASH payment results in change."})
+
+        change_ref = f"{reference}-change" if reference else ""
+
+        # ✅ Idempotency (single source of truth):
+        # If reference exists, fetch IN + optional OUT(change) and return them.
+        if reference:
+            existing_in = Payment.objects.filter(
+                tenant=request.tenant,
+                order_id=order.id,
+                reference=reference,
+                direction=Payment.Direction.IN,
+            ).first()
+
+            if existing_in:
+                existing_change = None
+                if method == Payment.Method.CASH:
+                    existing_change = Payment.objects.filter(
+                        tenant=request.tenant,
+                        order_id=order.id,
+                        reference=change_ref,
+                        direction=Payment.Direction.OUT,
+                    ).first()
+
+                # always return current order snapshot
+                recalc_order_totals(order)
+                order.refresh_from_db(fields=["paid_cents", "total_cents"])
+
+                resp = Response({
+                    "payment": PaymentSerializer(existing_in).data,
+                    "change_payment": PaymentSerializer(existing_change).data if existing_change else None,
+                    "order": OrderSerializer(order).data,
+                }, status=200)
+                resp["Idempotent-Replay"] = "true"
+                return resp
+
+        # create in+out atomically so we never need "healing math"
+        try:
+            with transaction.atomic():
+                # lock order row to prevent races with other payment attempts
+                Order.objects.select_for_update().get(pk=order.pk, tenant=request.tenant)
+
+                # recompute inside lock (balance could have changed since read)
+                _, locked_balance_due = compute_net_paid_and_balance(order)
+
+                if method != Payment.Method.CASH and amount_cents > locked_balance_due:
+                    raise ValidationError(
+                        {"amount_cents": f"Payment exceeds balance due ({locked_balance_due})."})
+
+                locked_change_cents = 0
+                if method == Payment.Method.CASH:
+                    locked_change_cents = max(
+                        amount_cents - locked_balance_due, 0)
+                    if locked_change_cents > 0 and not reference:
+                        raise ValidationError(
+                            {"reference": "Required when CASH payment results in change."})
+
+                locked_change_ref = f"{reference}-change" if reference else ""
+
+                payment_in = Payment.objects.create(
+                    tenant=request.tenant,
+                    order=order,
+                    method=method,
+                    status=Payment.Status.CAPTURED,
+                    direction=Payment.Direction.IN,
+                    amount_cents=amount_cents,
+                    reference=reference,
+                    note=note,
+                )
+
+                payment_out = None
+                if method == Payment.Method.CASH and locked_change_cents > 0:
+                    payment_out = Payment.objects.create(
+                        tenant=request.tenant,
+                        order=order,
+                        method=Payment.Method.CASH,
+                        status=Payment.Status.CAPTURED,
+                        direction=Payment.Direction.OUT,
+                        amount_cents=locked_change_cents,
+                        reference=locked_change_ref,
+                        note="Auto change-out",
+                    )
+
+        except IntegrityError:
+            # If you have a UNIQUE(tenant, reference) on Payment, this catches races.
+            # Return the idempotent replay result.
+            if reference:
+                existing_in = Payment.objects.filter(
+                    tenant=request.tenant,
+                    order_id=order.id,
+                    reference=reference,
+                    direction=Payment.Direction.IN,
+                ).first()
+                existing_change = Payment.objects.filter(
+                    tenant=request.tenant,
+                    order_id=order.id,
+                    reference=change_ref,
+                    direction=Payment.Direction.OUT,
+                ).first() if change_ref else None
+
+                recalc_order_totals(order)
+                order.refresh_from_db(fields=["paid_cents", "total_cents"])
+
+                resp = Response({
+                    "payment": PaymentSerializer(existing_in).data if existing_in else None,
+                    "change_payment": PaymentSerializer(existing_change).data if existing_change else None,
+                    "order": OrderSerializer(order).data,
+                }, status=200)
+                resp["Idempotent-Replay"] = "true"
+                return resp
+            raise
+
+        # Recalc and return updated order
+        recalc_order_totals(order)
+        order.refresh_from_db(fields=["paid_cents", "total_cents"])
+
+        return Response({
+            "payment": PaymentSerializer(payment_in).data,
+            "change_payment": PaymentSerializer(payment_out).data if payment_out else None,
+            "order": OrderSerializer(order).data,
+        }, status=201)
+
+    @action(detail=True, methods=["post"], url_path="cash-out")
+    def cash_out(self, request, pk=None):
+        """
+        POST /api/orders/{id}/cash-out/
+        Records a CAPTURED OUT payment (refund/change/cash payout).
+        Idempotent by reference (tenant-scoped).
+        Body:
+        {
+        "amount_cents": 50,
+        "method": "CASH",
+        "reference": "out-001",
+        "note": "Refund / change / payout"
+        }
+        """
+        order = (
+            Order.objects.filter(tenant=request.tenant, pk=pk)
+            .select_related("customer")
+            .prefetch_related("payments", "adjustments", "items__item")
+            .first()
+        )
+        if not order:
+            raise ValidationError({"order": "Order not found in this tenant."})
+
+        # 🔒 block after settlement (Option A lock)
+        if order.settled_at is not None:
+            raise ValidationError(
+                {"order": "Order is settled and cannot accept cash-out."})
+
+        # validate amount
+        try:
+            amount_cents = int(request.data.get("amount_cents"))
+        except Exception:
+            raise ValidationError({"amount_cents": "Required integer."})
+        if amount_cents <= 0:
+            raise ValidationError({"amount_cents": "Must be > 0."})
+
+        # validate method
+        method = request.data.get("method")
+        if method not in Payment.Method.values:
+            raise ValidationError(
+                {"method": f"Invalid. Allowed: {list(Payment.Method.values)}"})
+
+        reference = (request.data.get("reference") or "").strip()
+        note = request.data.get("note") or ""
+
+        # ✅ idempotent by reference
+        if reference:
+            existing = Payment.objects.filter(
+                tenant=request.tenant, reference=reference).first()
+            if existing:
+                if existing.order_id != order.id:
+                    raise ValidationError(
+                        {"reference": "Reference already used for a different order."})
+                if existing.direction != Payment.Direction.OUT:
+                    raise ValidationError(
+                        {"reference": "Reference exists but is not an OUT payment."})
+                resp = Response(PaymentSerializer(existing).data, status=200)
+                resp["Idempotent-Replay"] = "true"
+                return resp
+
+        with transaction.atomic():
+            payment_out = Payment.objects.create(
+                tenant=request.tenant,
+                order=order,
+                method=method,
+                status=Payment.Status.CAPTURED,
+                direction=Payment.Direction.OUT,
+                amount_cents=amount_cents,
+                reference=reference,
+                note=note or "Cash out",
+            )
+
+        recalc_order_totals(order)
+        order.refresh_from_db(fields=["paid_cents", "total_cents"])
+
+        return Response(
+            {"payment_out": PaymentSerializer(
+                payment_out).data, "order": OrderSerializer(order).data},
+            status=201
+        )
 
     @action(detail=True, methods=["post"], url_path="pickup")
     def pickup(self, request, pk=None):
@@ -129,7 +447,15 @@ class OrderViewSet(viewsets.ModelViewSet):
         Confirms order pickup. Default behavior: requires paid-in-full.
         Optional payload: {"allow_balance_due": true}
         """
-        allow_balance_due = bool(request.data.get("allow_balance_due", False))
+        tenant_requires_full = bool(
+            getattr(request.tenant, "require_paid_in_full_at_pickup", True))
+
+        # If tenant requires full payment, allow_balance_due defaults to False
+        # If tenant does NOT require full payment, allow_balance_due defaults to True
+        default_allow = (not tenant_requires_full)
+
+        allow_balance_due = bool(request.data.get(
+            "allow_balance_due", default_allow))
 
         order = (
             Order.objects.filter(tenant=request.tenant, pk=pk)
@@ -144,12 +470,9 @@ class OrderViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"order": "Order must be READY/COMPLETED before pickup."})
 
-        # Ensure totals are current
         recalc_order_totals(order)
         order.refresh_from_db(fields=["total_cents", "paid_cents"])
 
-        # Compute net paid using adjustments (same logic as receipt)
-        # NOTE: simplest: reuse OrderReceiptSerializer methods, or duplicate minimal logic here
         net_paid = int(order.paid_cents)
         for a in getattr(order, "adjustments").all():
             if a.status != Adjustment.Status.APPLIED:
@@ -209,7 +532,6 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         results = []
         for o in qs:
-            # compute net paid
             net_paid = int(o.paid_cents)
             for a in getattr(o, "adjustments").all():
                 if a.status != Adjustment.Status.APPLIED:
@@ -251,25 +573,21 @@ class OrderViewSet(viewsets.ModelViewSet):
                 {"order": "Order must be COMPLETED before settlement."})
 
         if order.settled_at is not None:
-            # idempotent settle: return receipt-like payload as-is
             data = OrderReceiptSerializer(order).data
             return Response(data)
 
-        # Ensure totals/paid are current
         recalc_order_totals(order)
         order.refresh_from_db(fields=["total_cents", "paid_cents"])
 
         if int(order.paid_cents) < int(order.total_cents):
             return Response({"order": "Order has balance due and cannot be settled."}, status=400)
 
-        # Snapshot values at settlement time (ignore adjustments entirely here)
         settled_total = int(order.total_cents)
         settled_paid = int(order.paid_cents)
         settled_change = max(settled_paid - settled_total, 0)
         settled_balance_due = max(settled_total - settled_paid, 0)
 
         with transaction.atomic():
-            # Lock row so two settle requests can't race
             locked = Order.objects.select_for_update().get(pk=order.pk)
 
             if locked.settled_at is not None:
@@ -290,7 +608,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "settled_balance_due_cents",
             ])
 
-        # Return receipt-style response after settle
         order.refresh_from_db()
         data = OrderReceiptSerializer(order).data
         return Response(data)
@@ -306,17 +623,11 @@ class OrderViewSet(viewsets.ModelViewSet):
             raise ValidationError({"order": "Order not found in this tenant."})
 
         qs = OrderStatusEvent.objects.filter(
-            tenant=request.tenant,
-            order=order,
-        ).order_by("created_at")
-
+            tenant=request.tenant, order=order).order_by("created_at")
         return Response(OrderStatusEventSerializer(qs, many=True).data)
 
     @action(detail=True, methods=["post"], url_path="set_customer")
     def set_customer(self, request, pk=None):
-        """
-        POST /api/orders/{id}/set_customer { "customer_id": "..." }
-        """
         customer_id = request.data.get("customer_id")
         if not customer_id:
             raise ValidationError({"customer_id": "Required"})
@@ -338,15 +649,6 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="set_customer_by_phone")
     def set_customer_by_phone(self, request, pk=None):
-        """
-        POST /api/orders/{id}/set_customer_by_phone
-        {
-          "phone": "...",
-          "name": "...",   (required if creating)
-          "email": "...",
-          "notes": "..."
-        }
-        """
         raw_phone = (request.data.get("phone") or "").strip()
         if not raw_phone:
             raise ValidationError({"phone": "Required"})
@@ -361,9 +663,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             raise ValidationError({"order": "Order not found in this tenant."})
 
         customer = Customer.objects.filter(
-            tenant=request.tenant,
-            phone_e164=phone_e164,
-        ).first()
+            tenant=request.tenant, phone_e164=phone_e164).first()
 
         if not customer:
             name = (request.data.get("name") or "").strip()
@@ -383,6 +683,100 @@ class OrderViewSet(viewsets.ModelViewSet):
         order.save(update_fields=["customer"])
 
         return Response(OrderSerializer(order).data)
+
+    @action(detail=False, methods=["post"], url_path="dropoff")
+    def dropoff(self, request):
+        """
+        POST /api/orders/dropoff/
+        Creates an order and optionally records an initial payment (deposit/full).
+        Idempotency supported via initial_payment.reference (tenant-scoped).
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        customer_id = serializer.validated_data["customer"].id
+        if not Customer.objects.filter(id=customer_id, tenant=request.tenant).exists():
+            raise ValidationError(
+                {"customer": "Customer does not belong to this tenant."})
+
+        if serializer.validated_data.get("status") == "CANCELLED":
+            raise ValidationError(
+                {"status": "Cannot create a cancelled order at dropoff."})
+
+        initial_payment = request.data.get("initial_payment")
+
+        with transaction.atomic():
+            due_at = serializer.validated_data.get(
+                "due_at") or default_due_at_for_tenant(request.tenant)
+
+            order = serializer.save(
+                tenant=request.tenant,
+                received_at=timezone.now(),
+                due_at=due_at,
+            )
+
+            OrderStatusEvent.objects.create(
+                tenant=request.tenant,
+                order=order,
+                from_status=order.status,
+                to_status=order.status,
+                changed_by=request.user if request.user.is_authenticated else None,
+                note="Order created",
+            )
+
+            if getattr(order, "settled_at", None) is not None:
+                raise ValidationError(
+                    {"order": "Order is settled and cannot accept payments."})
+
+            payment_obj = None
+            if initial_payment:
+                try:
+                    amount_cents = int(initial_payment.get("amount_cents", 0))
+                except Exception:
+                    raise ValidationError(
+                        {"initial_payment.amount_cents": "Must be integer."})
+
+                method = initial_payment.get("method")
+                if amount_cents <= 0:
+                    raise ValidationError(
+                        {"initial_payment.amount_cents": "Must be > 0."})
+                if method not in Payment.Method.values:
+                    raise ValidationError(
+                        {"initial_payment.method": f"Invalid. Allowed: {list(Payment.Method.values)}"})
+
+                reference = (initial_payment.get("reference") or "").strip()
+
+                # ✅ idempotent by tenant+reference
+                if reference:
+                    existing = Payment.objects.filter(
+                        tenant=request.tenant, reference=reference).first()
+                    if existing and existing.order_id != order.id:
+                        raise ValidationError(
+                            {"initial_payment.reference": "Reference already used for a different order."})
+                    payment_obj = existing
+
+                if payment_obj is None:
+                    payment_obj = Payment.objects.create(
+                        tenant=request.tenant,
+                        order=order,
+                        method=method,
+                        status=Payment.Status.CAPTURED,
+                        direction=Payment.Direction.IN,
+                        amount_cents=amount_cents,
+                        reference=reference,
+                        note=(initial_payment.get("note") or ""),
+                    )
+
+                recalc_order_totals(order)
+                order.refresh_from_db(
+                    fields=["subtotal_cents", "tax_cents", "total_cents", "paid_cents"])
+
+        order.refresh_from_db()
+        payload = OrderSerializer(order).data
+        if payment_obj:
+            payload["initial_payment"] = PaymentSerializer(payment_obj).data
+
+        return Response(payload, status=201)
 
 
 class OrderItemViewSet(viewsets.ModelViewSet):
@@ -404,7 +798,6 @@ class OrderItemViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"item": "Inventory item does not belong to this tenant."})
 
-        # 🔒 GUARDRAILS
         if order.status == "PICKED_UP":
             raise ValidationError(
                 {"order": "Cannot modify items after pickup."})
@@ -418,19 +811,20 @@ class OrderItemViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         order_item = serializer.instance
         order = order_item.order
-        # 🔒 GUARDRAILS
+
         if order.status == "PICKED_UP":
             raise ValidationError(
                 {"order": "Cannot modify items after pickup."})
         if order.settled_at is not None:
             raise ValidationError(
                 {"order": "Cannot modify items after settlement."})
+
         order_item = serializer.save()
         recalc_order_totals(order_item.order)
 
     def perform_destroy(self, instance):
         order = instance.order
-        # 🔒 GUARDRAILS
+
         if order.status == "PICKED_UP":
             raise ValidationError(
                 {"order": "Cannot modify items after pickup."})

@@ -5,11 +5,7 @@ from .models import Order
 
 
 def recalc_order_totals(order: Order, tax_rate=0.08):
-    """
-    Recalculate subtotal/tax/total + paid_cents derived from payments.
-    Safe under concurrency (locks the order row).
-    """
-    from payments.models import Payment  # local import avoids circulars
+    from payments.models import Payment
 
     with transaction.atomic():
         order = Order.objects.select_for_update().get(pk=order.pk)
@@ -38,7 +34,7 @@ def recalc_order_totals(order: Order, tax_rate=0.08):
             or 0
         )
 
-        order.paid_cents = int(captured_in - captured_out)
+        order.paid_cents = max(int(captured_in - captured_out), 0)
 
         order.save(update_fields=[
             "subtotal_cents",

@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
+from django.core.exceptions import ValidationError
 
 
 class Tenant(models.Model):
@@ -11,6 +12,21 @@ class Tenant(models.Model):
 
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    default_turnaround_days = models.PositiveSmallIntegerField(default=2)
+    default_ready_hour = models.PositiveSmallIntegerField(default=17)   # 0-23
+    default_ready_minute = models.PositiveSmallIntegerField(default=0)
+    require_paid_in_full_at_pickup = models.BooleanField(default=True)
+
+    def clean(self):
+        if self.default_turnaround_days is not None and self.default_turnaround_days > 30:
+            raise ValidationError(
+                {"default_turnaround_days": "Must be <= 30."})
+
+        if self.default_ready_hour is not None and self.default_ready_hour > 23:
+            raise ValidationError({"default_ready_hour": "Must be 0-23."})
+
+        if self.default_ready_minute is not None and self.default_ready_minute > 59:
+            raise ValidationError({"default_ready_minute": "Must be 0-59."})
 
     def save(self, *args, **kwargs):
         """
@@ -28,6 +44,7 @@ class Tenant(models.Model):
 
             self.slug = slug
 
+        self.full_clean()
         super().save(*args, **kwargs)
 
     def __str__(self):
