@@ -5,6 +5,8 @@ from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
+from payments.models import Adjustment
+
 
 from customers.models import Customer, normalize_phone_us
 
@@ -91,7 +93,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                 elif new_status == "CANCELLED" and order.cancelled_at is None:
                     order.cancelled_at = now
                     updates.append("cancelled_at")
-
+                elif new_status == "PICKED_UP" and order.picked_up_at is None:
+                    order.picked_up_at = now
+                    updates.append("picked_up_at")
                 if updates:
                     order.save(update_fields=updates)
 
@@ -117,6 +121,112 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
 
         return Response(OrderReceiptSerializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="pickup")
+    def pickup(self, request, pk=None):
+        """
+        POST /api/orders/{id}/pickup/
+        Confirms order pickup. Default behavior: requires paid-in-full.
+        Optional payload: {"allow_balance_due": true}
+        """
+        allow_balance_due = bool(request.data.get("allow_balance_due", False))
+
+        order = (
+            Order.objects.filter(tenant=request.tenant, pk=pk)
+            .select_related("customer")
+            .prefetch_related("payments", "adjustments", "items__item")
+            .first()
+        )
+        if not order:
+            raise ValidationError({"order": "Order not found in this tenant."})
+
+        if order.status not in ("READY", "COMPLETED"):
+            raise ValidationError(
+                {"order": "Order must be READY/COMPLETED before pickup."})
+
+        # Ensure totals are current
+        recalc_order_totals(order)
+        order.refresh_from_db(fields=["total_cents", "paid_cents"])
+
+        # Compute net paid using adjustments (same logic as receipt)
+        # NOTE: simplest: reuse OrderReceiptSerializer methods, or duplicate minimal logic here
+        net_paid = int(order.paid_cents)
+        for a in getattr(order, "adjustments").all():
+            if a.status != Adjustment.Status.APPLIED:
+                continue
+            if a.direction == Adjustment.Direction.IN:
+                net_paid += int(a.amount_cents)
+            else:
+                net_paid -= int(a.amount_cents)
+
+        balance_due = max(int(order.total_cents) - net_paid, 0)
+
+        if balance_due > 0 and not allow_balance_due:
+            raise ValidationError(
+                {"order": "Balance due. Collect payment or pass allow_balance_due=true."})
+
+        with transaction.atomic():
+            locked = Order.objects.select_for_update().get(
+                pk=order.pk, tenant=request.tenant)
+
+            if locked.status == "PICKED_UP":
+                return Response(OrderSerializer(locked).data)
+
+            old_status = locked.status
+            locked.status = "PICKED_UP"
+
+            now = timezone.now()
+            if locked.picked_up_at is None:
+                locked.picked_up_at = now
+
+            locked.save(update_fields=["status", "picked_up_at"])
+
+            OrderStatusEvent.objects.create(
+                tenant=request.tenant,
+                order=locked,
+                from_status=old_status,
+                to_status="PICKED_UP",
+                changed_by=request.user if request.user.is_authenticated else None,
+                note="Picked up",
+            )
+
+        order.refresh_from_db()
+        return Response(OrderSerializer(order).data)
+
+    @action(detail=False, methods=["get"], url_path="ready-unpaid")
+    def ready_unpaid(self, request):
+        """
+        GET /api/orders/ready-unpaid/
+        Orders that are READY/COMPLETED but still have balance due (considering adjustments).
+        """
+        qs = (
+            Order.objects.filter(tenant=request.tenant,
+                                 status__in=["READY", "COMPLETED"])
+            .select_related("customer")
+            .prefetch_related("adjustments")
+            .order_by("-created_at")[:200]
+        )
+
+        results = []
+        for o in qs:
+            # compute net paid
+            net_paid = int(o.paid_cents)
+            for a in getattr(o, "adjustments").all():
+                if a.status != Adjustment.Status.APPLIED:
+                    continue
+                if a.direction == Adjustment.Direction.IN:
+                    net_paid += int(a.amount_cents)
+                else:
+                    net_paid -= int(a.amount_cents)
+
+            balance_due = max(int(o.total_cents) - net_paid, 0)
+            if balance_due > 0:
+                data = OrderSerializer(o).data
+                data["balance_due_cents"] = balance_due
+                data["net_paid_cents"] = net_paid
+                results.append(data)
+
+        return Response(results)
 
     @action(detail=True, methods=["post"])
     def settle(self, request, pk=None):
@@ -294,14 +404,39 @@ class OrderItemViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"item": "Inventory item does not belong to this tenant."})
 
+        # 🔒 GUARDRAILS
+        if order.status == "PICKED_UP":
+            raise ValidationError(
+                {"order": "Cannot modify items after pickup."})
+        if order.settled_at is not None:
+            raise ValidationError(
+                {"order": "Cannot modify items after settlement."})
+
         serializer.save(tenant=self.request.tenant)
         recalc_order_totals(order)
 
     def perform_update(self, serializer):
+        order_item = serializer.instance
+        order = order_item.order
+        # 🔒 GUARDRAILS
+        if order.status == "PICKED_UP":
+            raise ValidationError(
+                {"order": "Cannot modify items after pickup."})
+        if order.settled_at is not None:
+            raise ValidationError(
+                {"order": "Cannot modify items after settlement."})
         order_item = serializer.save()
         recalc_order_totals(order_item.order)
 
     def perform_destroy(self, instance):
         order = instance.order
+        # 🔒 GUARDRAILS
+        if order.status == "PICKED_UP":
+            raise ValidationError(
+                {"order": "Cannot modify items after pickup."})
+        if order.settled_at is not None:
+            raise ValidationError(
+                {"order": "Cannot modify items after settlement."})
+
         super().perform_destroy(instance)
         recalc_order_totals(order)

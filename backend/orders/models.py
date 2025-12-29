@@ -26,6 +26,7 @@ class Order(models.Model):
     ready_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
+    picked_up_at = models.DateTimeField(null=True, blank=True)
 
     # accounting fields
     subtotal_cents = models.PositiveIntegerField(default=0)

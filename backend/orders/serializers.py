@@ -8,8 +8,9 @@ from customers.models import Customer
 ORDER_STATUS_TRANSITIONS = {
     "RECEIVED": {"IN_PROGRESS", "CANCELLED"},
     "IN_PROGRESS": {"READY", "CANCELLED"},
-    "READY": {"COMPLETED", "CANCELLED"},
-    "COMPLETED": set(),
+    "READY": {"COMPLETED", "PICKED_UP", "CANCELLED"},
+    "COMPLETED": {"PICKED_UP"},
+    "PICKED_UP": set(),
     "CANCELLED": set(),
 }
 
@@ -29,7 +30,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "paid_cents",
             "settled_at",
             "created_at",
-            "received_at", "in_progress_at", "ready_at", "completed_at", "cancelled_at",
+            "received_at", "in_progress_at", "ready_at", "completed_at", "cancelled_at", "picked_up_at",
         ]
         read_only_fields = [
             "id",
@@ -38,7 +39,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "tax_cents",
             "total_cents",
             "paid_cents",
-            "settled_at", "received_at", "in_progress_at", "ready_at", "completed_at", "cancelled_at",
+            "settled_at", "received_at", "in_progress_at", "ready_at", "completed_at", "cancelled_at", "picked_up_at",
         ]
 
     def validate(self, attrs):
