@@ -828,6 +828,69 @@ class OrderViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=False, methods=["get"], url_path="queue")
+    def queue(self, request):
+        """
+        /api/orders/queue/?status=READY
+        /api/orders/queue/?status=READY&ready_unpaid=1
+        /api/orders/queue/?status=IN_PROGRESS
+        """
+        status = (request.query_params.get("status") or "").strip().upper()
+        ready_unpaid_raw = (request.query_params.get(
+            "ready_unpaid") or "").lower()
+        ready_unpaid = ready_unpaid_raw in ("1", "true", "yes", "y")
+
+        if not status:
+            raise ValidationError(
+                {"status": "Required. Example: ?status=READY"})
+
+        allowed = {"CREATED", "IN_PROGRESS", "READY", "PICKED_UP", "CANCELLED"}
+        if status not in allowed:
+            raise ValidationError(
+                {"status": f"Invalid. Allowed: {sorted(list(allowed))}"})
+
+        qs = self.get_queryset().filter(status=status)
+
+        if ready_unpaid:
+            # Use persisted “settled” balance for fast operator queues.
+            # Treat NULL as unknown -> exclude from “unpaid” queue.
+            qs = qs.filter(settled_balance_due_cents__gt=0)
+
+        qs = qs.order_by("-created_at")
+
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            ser = self.get_serializer(page, many=True)
+            return self.get_paginated_response(ser.data)
+
+        ser = self.get_serializer(qs, many=True)
+        return Response(ser.data)
+    
+    @action(detail=False, methods=["get"], url_path="search")
+    def search(self, request):
+        """
+        /api/orders/search/?q=patel
+        /api/orders/search/?q=714
+        /api/orders/search/?q=1234
+        """
+        q = (request.query_params.get("q") or "").strip()
+
+        if not q:
+            raise ValidationError({"q": "Required. Example: ?q=patel"})
+
+        qs = self.get_queryset()
+
+        qs = qs.filter(
+            Q(customer__name__icontains=q)
+            | Q(customer__phone__icontains=q)
+            | Q(id__icontains=q)
+        ).select_related("customer")
+
+        qs = qs.order_by("-created_at")[:20]  # hard cap for counter speed
+
+        ser = self.get_serializer(qs, many=True)
+        return Response(ser.data)
+
 
 class OrderItemViewSet(viewsets.ModelViewSet):
     serializer_class = OrderItemSerializer
