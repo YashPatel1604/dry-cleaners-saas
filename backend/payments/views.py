@@ -15,6 +15,7 @@ from rest_framework.response import Response
 from orders.services import recalc_order_totals
 from .models import Payment, Adjustment
 from .serializers import PaymentSerializer, AdjustmentSerializer
+from audit.utils import emit_event, actor_from_request
 
 
 # =========================
@@ -78,6 +79,16 @@ class PaymentViewSet(viewsets.ModelViewSet):
                 .first()
             )
             if existing:
+                emit_event(
+                    tenant=self.request.tenant,
+                    request_id=getattr(request, "request_id", ""),
+                    actor=actor_from_request(request),
+                    action="payment.replayed",
+                    entity_type="payment",
+                    entity_id=existing.id,
+                    metadata={"endpoint": "payments.create",
+                              "reference": reference},
+                )
                 resp = Response(PaymentSerializer(existing).data, status=200)
                 resp["Idempotent-Replay"] = "true"
                 return resp
@@ -99,6 +110,19 @@ class PaymentViewSet(viewsets.ModelViewSet):
                     .first()
                 )
                 if existing:
+                    emit_event(
+                        tenant=self.request.tenant,
+                        request_id=getattr(request, "request_id", ""),
+                        actor=actor_from_request(request),
+                        action="payment.replayed",
+                        entity_type="payment",
+                        entity_id=existing.id,
+                        metadata={
+                            "endpoint": "payments.create",
+                            "reference": reference,
+                            "reason": "integrity_error",
+                        },
+                    )
                     resp = Response(PaymentSerializer(
                         existing).data, status=200)
                     resp["Idempotent-Replay"] = "true"
@@ -108,6 +132,31 @@ class PaymentViewSet(viewsets.ModelViewSet):
         recalc_order_totals(order)
         order.refresh_from_db(
             fields=["subtotal_cents", "tax_cents", "total_cents", "paid_cents"])
+
+        emit_event(
+            tenant=self.request.tenant,
+            request_id=getattr(request, "request_id", ""),
+            actor=actor_from_request(request),
+            action="payment.created",
+            entity_type="payment",
+            entity_id=payment.id,
+            before=None,
+            after={
+                "order_id": payment.order_id,
+                "direction": payment.direction,
+                "method": payment.method,
+                "status": payment.status,
+                "amount_cents": payment.amount_cents,
+                "reference": payment.reference,
+                "note": payment.note,
+                "created_at": payment.created_at.isoformat() if payment.created_at else None,
+            },
+            metadata={
+                "endpoint": "payments.create",
+                "idempotent_replay": False,
+            },
+        )
+
         return Response(PaymentSerializer(payment).data, status=201)
 
     @action(detail=True, methods=["post"])
@@ -123,8 +172,22 @@ class PaymentViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"payment": "Only CAPTURED payments can be voided."})
 
+        before = {"status": payment.status}
+
         payment.status = Payment.Status.VOIDED
         payment.save(update_fields=["status"])
+
+        emit_event(
+            tenant=self.request.tenant,
+            request_id=getattr(request, "request_id", ""),
+            actor=actor_from_request(request),
+            action="payment.voided",
+            entity_type="payment",
+            entity_id=payment.id,
+            before=before,
+            after={"status": payment.status},
+            metadata={"endpoint": "payments.void"},
+        )
 
         recalc_order_totals(payment.order)
         return Response({"ok": True})
@@ -206,6 +269,18 @@ class PaymentViewSet(viewsets.ModelViewSet):
                 if existing.order_id != order.id:
                     raise ValidationError(
                         {"reference": "Reference already used for a different order."})
+                emit_event(
+                    tenant=self.request.tenant,
+                    request_id=getattr(request, "request_id", ""),
+                    actor=actor_from_request(request),
+                    action="payment.replayed",
+                    entity_type="payment",
+                    entity_id=existing.id,
+                    metadata={
+                        "endpoint": "payments.refund",
+                        "reference": reference,
+                    },
+                )
                 resp = Response(PaymentSerializer(existing).data, status=200)
                 resp["Idempotent-Replay"] = "true"
                 return resp
@@ -237,11 +312,48 @@ class PaymentViewSet(viewsets.ModelViewSet):
                 existing = Payment.objects.filter(
                     tenant=self.request.tenant, reference=reference).first()
                 if existing:
+                    emit_event(
+                        tenant=self.request.tenant,
+                        request_id=getattr(request, "request_id", ""),
+                        actor=actor_from_request(request),
+                        action="payment.replayed",
+                        entity_type="payment",
+                        entity_id=existing.id,
+                        metadata={
+                            "endpoint": "payments.refund",
+                            "reference": reference,
+                        },
+                    )
                     resp = Response(PaymentSerializer(
                         existing).data, status=200)
                     resp["Idempotent-Replay"] = "true"
                     return resp
             raise
+
+        emit_event(
+            tenant=self.request.tenant,
+            request_id=getattr(request, "request_id", ""),
+            actor=actor_from_request(request),
+            action="payment.created",
+            entity_type="payment",
+            entity_id=payout.id,
+            before=None,
+            after={
+                "order_id": payout.order_id,
+                "direction": payout.direction,     # OUT
+                "method": payout.method,
+                "status": payout.status,
+                "amount_cents": payout.amount_cents,
+                "reference": payout.reference,
+                "note": payout.note,
+                "created_at": payout.created_at.isoformat() if payout.created_at else None,
+            },
+            metadata={
+                "endpoint": "payments.refund",
+                "purpose": purpose,
+                "idempotent_replay": False,
+            },
+        )
 
         recalc_order_totals(order)
         order.refresh_from_db(
@@ -636,8 +748,31 @@ class AdjustmentViewSet(viewsets.ModelViewSet):
                 {"amount_cents": f"Adjustment exceeds net paid ({net_paid})."})
 
         # save atomically; mark APPLIED by default
-        serializer.save(tenant=self.request.tenant,
-                        status=Adjustment.Status.APPLIED)
+        adj = serializer.save(
+            tenant=self.request.tenant,
+            status=Adjustment.Status.APPLIED,
+        )
+
+        emit_event(
+            tenant=self.request.tenant,
+            request_id=getattr(self.request, "request_id", ""),
+            actor=actor_from_request(self.request),
+            action="adjustment.created",
+            entity_type="adjustment",
+            entity_id=adj.id,
+            before=None,
+            after={
+                "order_id": adj.order_id,
+                "kind": adj.kind,
+                "direction": adj.direction,
+                "status": adj.status,
+                "amount_cents": adj.amount_cents,
+                "reference": adj.reference,
+                "note": adj.note,
+                "created_at": adj.created_at.isoformat() if adj.created_at else None,
+            },
+            metadata={"endpoint": "adjustments.create"},
+        )
 
         # refresh derived totals used by receipts
         recalc_order_totals(order)
@@ -654,8 +789,21 @@ class AdjustmentViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"order": "Order is not settled; voiding adjustments is blocked."})
 
+        before = {"status": adj.status}
         adj.status = Adjustment.Status.VOIDED
         adj.save(update_fields=["status"])
+
+        emit_event(
+            tenant=self.request.tenant,
+            request_id=getattr(request, "request_id", ""),
+            actor=actor_from_request(request),
+            action="adjustment.voided",
+            entity_type="adjustment",
+            entity_id=adj.id,
+            before=before,
+            after={"status": adj.status},
+            metadata={"endpoint": "adjustments.void"},
+        )
 
         recalc_order_totals(adj.order)
         return Response({"ok": True})

@@ -1,6 +1,30 @@
 from django.http import JsonResponse
 from django.utils.deprecation import MiddlewareMixin
 from .models import Tenant
+import uuid
+
+
+class RequestIDMiddleware:
+    """
+    - Uses incoming X-Request-ID if present, else generates a UUID
+    - Sets request.request_id
+    - Echoes X-Request-ID back on every response
+    """
+    IN_HEADER = "HTTP_X_REQUEST_ID"   # incoming header: X-Request-ID
+    OUT_HEADER = "X-Request-ID"       # response header
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        rid = request.META.get(self.IN_HEADER)
+        if not rid:
+            rid = str(uuid.uuid4())
+
+        request.request_id = rid
+        response = self.get_response(request)
+        response[self.OUT_HEADER] = rid
+        return response
 
 
 class TenantMiddleware(MiddlewareMixin):

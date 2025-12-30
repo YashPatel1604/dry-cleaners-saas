@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     "inventory",
     "payments",
     "dashboard",
+    "audit",
 ]
 
 
@@ -64,6 +65,7 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
+    "tenants.middleware.RequestIDMiddleware",
     "tenants.middleware.TenantMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
