@@ -12,6 +12,10 @@ from rest_framework.response import Response
 from customers.models import Customer, normalize_phone_us
 from payments.models import Payment, Adjustment
 from payments.serializers import PaymentSerializer
+from audit.models import AuditEvent
+from .services import recalc_order_totals
+from django.db import IntegrityError
+from django.db.models import Q
 
 from .models import Order, OrderItem, OrderStatusEvent
 from .serializers import (
@@ -20,9 +24,6 @@ from .serializers import (
     OrderReceiptSerializer,
     OrderStatusEventSerializer,
 )
-from .services import recalc_order_totals
-from django.db import IntegrityError
-from django.db.models import Q
 
 
 def default_due_at_for_tenant(tenant, now=None):
@@ -777,6 +778,55 @@ class OrderViewSet(viewsets.ModelViewSet):
             payload["initial_payment"] = PaymentSerializer(payment_obj).data
 
         return Response(payload, status=201)
+
+    @action(detail=True, methods=["get"])
+    def timeline(self, request, pk=None):
+        order = self.get_object()
+
+        # safety: tenant isolation (should already be enforced by get_queryset/get_object)
+        if order.tenant_id != request.tenant.id:
+            raise ValidationError(
+                {"order": "Order does not belong to this tenant."})
+
+        payment_ids = list(
+            Payment.objects.filter(
+                tenant=request.tenant, order_id=order.id).values_list("id", flat=True)
+        )
+        adjustment_ids = list(
+            Adjustment.objects.filter(
+                tenant=request.tenant, order_id=order.id).values_list("id", flat=True)
+        )
+
+        qs = AuditEvent.objects.filter(tenant=request.tenant).filter(
+            Q(entity_type="order", entity_id=str(order.id))
+            | Q(entity_type="payment", entity_id__in=[str(i) for i in payment_ids])
+            | Q(entity_type="adjustment", entity_id__in=[str(i) for i in adjustment_ids])
+        ).order_by("created_at")
+
+        data = [
+            {
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+                "action": e.action,
+                "entity_type": e.entity_type,
+                "entity_id": e.entity_id,
+                "actor_type": e.actor_type,
+                "actor_id": e.actor_id,
+                "actor_label": e.actor_label,
+                "request_id": e.request_id,
+                "before": e.before,
+                "after": e.after,
+                "metadata": e.metadata,
+            }
+            for e in qs
+        ]
+
+        return Response(
+            {
+                "order_id": order.id,
+                "count": len(data),
+                "events": data,
+            }
+        )
 
 
 class OrderItemViewSet(viewsets.ModelViewSet):
