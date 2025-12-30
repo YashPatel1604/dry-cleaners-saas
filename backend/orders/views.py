@@ -1,5 +1,7 @@
 # orders/views.py
 from datetime import timedelta, datetime
+from datetime import timezone as dt_timezone
+
 
 from django.db import transaction
 from django.utils import timezone
@@ -15,7 +17,10 @@ from payments.serializers import PaymentSerializer
 from audit.models import AuditEvent
 from .services import recalc_order_totals
 from django.db import IntegrityError
-from django.db.models import Q
+from django.db.models import Q, Count, Sum
+from zoneinfo import ZoneInfo
+from django.db.models.functions import Coalesce
+
 
 from .models import Order, OrderItem, OrderStatusEvent
 from .serializers import (
@@ -779,29 +784,37 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         return Response(payload, status=201)
 
-    @action(detail=True, methods=["get"])
-    def timeline(self, request, pk=None):
-        order = self.get_object()
-
-        # safety: tenant isolation (should already be enforced by get_queryset/get_object)
-        if order.tenant_id != request.tenant.id:
-            raise ValidationError(
-                {"order": "Order does not belong to this tenant."})
+    @action(detail=True, methods=["get"], url_path="audit")
+    def audit(self, request, pk=None):
+        """
+        GET /api/orders/{id}/audit/
+        Raw audit feed (developer/compliance oriented). Includes:
+        - order audit events
+        - payment audit events for payments on this order
+        - adjustment audit events for adjustments on this order
+        """
+        order = self.get_object()  # already tenant-scoped via get_queryset()
 
         payment_ids = list(
             Payment.objects.filter(
-                tenant=request.tenant, order_id=order.id).values_list("id", flat=True)
+                tenant=request.tenant, order_id=order.id
+            ).values_list("id", flat=True)
         )
         adjustment_ids = list(
             Adjustment.objects.filter(
-                tenant=request.tenant, order_id=order.id).values_list("id", flat=True)
+                tenant=request.tenant, order_id=order.id
+            ).values_list("id", flat=True)
         )
 
-        qs = AuditEvent.objects.filter(tenant=request.tenant).filter(
-            Q(entity_type="order", entity_id=str(order.id))
-            | Q(entity_type="payment", entity_id__in=[str(i) for i in payment_ids])
-            | Q(entity_type="adjustment", entity_id__in=[str(i) for i in adjustment_ids])
-        ).order_by("created_at")
+        qs = (
+            AuditEvent.objects.filter(tenant=request.tenant)
+            .filter(
+                Q(entity_type="order", entity_id=str(order.id))
+                | Q(entity_type="payment", entity_id__in=[str(i) for i in payment_ids])
+                | Q(entity_type="adjustment", entity_id__in=[str(i) for i in adjustment_ids])
+            )
+            .order_by("created_at")
+        )
 
         data = [
             {
@@ -820,13 +833,357 @@ class OrderViewSet(viewsets.ModelViewSet):
             for e in qs
         ]
 
-        return Response(
-            {
-                "order_id": order.id,
-                "count": len(data),
-                "events": data,
-            }
+        return Response({"order_id": order.id, "count": len(data), "events": data})
+
+    @action(detail=True, methods=["get"], url_path="timeline")
+    def timeline(self, request, pk=None):
+        """
+        GET /api/orders/{id}/timeline/
+        Operator-friendly merged timeline:
+        - order.created (derived)
+        - status.change (OrderStatusEvent)
+        - payment.* (Payment)
+        - adjustment.* (Adjustment)
+        - settlement.snapshot (derived from Order.settled_* fields)
+        """
+        order = self.get_object()  # tenant-safe
+
+        def actor_from_user(user):
+            if user:
+                return {
+                    "type": "USER",
+                    "id": str(user.id),
+                    "label": getattr(user, "username", "") or str(user),
+                }
+            return {"type": "SYSTEM", "id": "", "label": "system"}
+
+        def amount_obj(cents: int):
+            return {"currency": "USD", "cents": int(cents)}
+
+        events = []
+
+        # 1) Order created (derived)
+        events.append({
+            "id": f"order:{order.id}",
+            "at": order.created_at,
+            "kind": "order.created",
+            "title": "Order created",
+            "summary": f"Order #{order.id} created",
+            "actor": {"type": "SYSTEM", "id": "", "label": "system"},
+            "amount": None,
+            "refs": {"order_id": order.id, "status_event_id": None, "payment_id": None, "adjustment_id": None},
+            "meta": {},
+        })
+
+        # 2) Status events
+        status_events = (
+            OrderStatusEvent.objects
+            .filter(tenant=request.tenant, order=order)
+            .select_related("changed_by")
+            .order_by("created_at")
         )
+        for se in status_events:
+            events.append({
+                "id": f"status:{se.id}",
+                "at": se.created_at,
+                "kind": "status.change",
+                "title": "Status changed",
+                "summary": f"{se.from_status} → {se.to_status}",
+                "actor": actor_from_user(se.changed_by),
+                "amount": None,
+                "refs": {"order_id": order.id, "status_event_id": se.id, "payment_id": None, "adjustment_id": None},
+                "meta": {"from_status": se.from_status, "to_status": se.to_status, "note": se.note or ""},
+            })
+
+        # 3) Payments
+        payments = (
+            Payment.objects
+            .filter(tenant=request.tenant, order=order)
+            .order_by("created_at")
+        )
+        for p in payments:
+            signed = int(
+                p.amount_cents) if p.direction == Payment.Direction.IN else -int(p.amount_cents)
+            kind = "payment.created" if p.status == Payment.Status.CAPTURED else "payment.voided"
+            title = "Payment received" if kind == "payment.created" else "Payment voided"
+
+            events.append({
+                "id": f"payment:{p.id}",
+                "at": p.created_at,
+                "kind": kind,
+                "title": title,
+                "summary": f"{p.method} {'+' if signed >= 0 else ''}{signed/100:.2f}",
+                "actor": {"type": "SYSTEM", "id": "", "label": "system"},
+                "amount": amount_obj(signed),
+                "refs": {"order_id": order.id, "status_event_id": None, "payment_id": p.id, "adjustment_id": None},
+                "meta": {
+                    "method": p.method,
+                    "status": p.status,
+                    "direction": p.direction,
+                    "reference": p.reference,
+                    "note": p.note or "",
+                },
+            })
+
+        # 4) Adjustments
+        adjustments = (
+            Adjustment.objects
+            .filter(tenant=request.tenant, order=order)
+            .order_by("created_at")
+        )
+        for a in adjustments:
+            signed = int(
+                a.amount_cents) if a.direction == Adjustment.Direction.IN else -int(a.amount_cents)
+            kind = "adjustment.applied" if a.status == Adjustment.Status.APPLIED else "adjustment.voided"
+            title = "Adjustment applied" if kind == "adjustment.applied" else "Adjustment voided"
+
+            events.append({
+                "id": f"adjustment:{a.id}",
+                "at": a.created_at,
+                "kind": kind,
+                "title": title,
+                "summary": f"{a.kind} {'+' if signed >= 0 else ''}{signed/100:.2f}",
+                "actor": {"type": "SYSTEM", "id": "", "label": "system"},
+                "amount": amount_obj(signed),
+                "refs": {"order_id": order.id, "status_event_id": None, "payment_id": None, "adjustment_id": a.id},
+                "meta": {
+                    "kind": a.kind,
+                    "status": a.status,
+                    "direction": a.direction,
+                    "reference": a.reference,
+                    "note": a.note or "",
+                },
+            })
+
+        # 5) Settlement snapshot (derived)
+        if order.settled_at is not None:
+            events.append({
+                "id": f"order:{order.id}:settlement",
+                "at": order.settled_at,
+                "kind": "settlement.snapshot",
+                "title": "Settlement snapshot",
+                "summary": "Totals locked for accounting",
+                "actor": {"type": "SYSTEM", "id": "", "label": "system"},
+                "amount": None,
+                "refs": {"order_id": order.id, "status_event_id": None, "payment_id": None, "adjustment_id": None},
+                "meta": {
+                    "settled_total_cents": order.settled_total_cents,
+                    "settled_paid_cents": order.settled_paid_cents,
+                    "settled_change_cents": order.settled_change_cents,
+                    "settled_balance_due_cents": order.settled_balance_due_cents,
+                },
+            })
+
+        events.sort(key=lambda e: (e["at"], e["id"]))
+        return Response(events)
+
+    @action(detail=True, methods=["get"], url_path="labels")
+    def labels(self, request, pk=None):
+        """
+        GET /api/orders/{id}/labels/
+        Returns label payloads (one per piece) for printing later.
+        Invoice number = order.id.
+        """
+        # ✅ 404 if not in this tenant (because get_queryset is tenant-scoped)
+        order = self.get_object()
+
+        # pull related data efficiently
+        order = (
+            Order.objects.filter(tenant=request.tenant, pk=order.pk)
+            .select_related("customer")
+            .prefetch_related("items__item")
+            .get()
+        )
+
+        customer_name = getattr(order.customer, "name", "") or ""
+
+        labels = []
+        seq = 1
+
+        items = sorted(list(order.items.all()),
+                       key=lambda oi: (oi.id, oi.item_id))
+        for oi in items:
+            item_name = ""
+            if getattr(oi, "item", None) is not None:
+                item_name = getattr(oi.item, "name", "") or str(oi.item)
+
+            qty = int(getattr(oi, "quantity", 1) or 1)
+            qty = max(qty, 1)
+
+            for _ in range(qty):
+                label_code = f"ORD-{order.id}-{seq:03d}"
+                labels.append({
+                    "order_id": order.id,
+                    "label_code": label_code,
+                    "sequence": seq,
+                    "customer_name": customer_name,
+                    "due_at": order.due_at.isoformat() if order.due_at else None,
+                    "item_name": item_name,
+                    "order_item_id": oi.id,
+                })
+                seq += 1
+
+        return Response({"order_id": order.id, "count": len(labels), "labels": labels})
+
+    @action(detail=False, methods=["get"], url_path="queue")
+    def queue(self, request):
+        """
+        /api/orders/queue/?status=READY
+        /api/orders/queue/?status=READY&ready_unpaid=1
+        /api/orders/queue/?status=IN_PROGRESS
+        """
+        status = (request.query_params.get("status") or "").strip().upper()
+        ready_unpaid_raw = (request.query_params.get(
+            "ready_unpaid") or "").lower()
+        ready_unpaid = ready_unpaid_raw in ("1", "true", "yes", "y")
+
+        if not status:
+            raise ValidationError(
+                {"status": "Required. Example: ?status=READY"})
+
+        allowed = {"CREATED", "IN_PROGRESS", "READY", "PICKED_UP", "CANCELLED"}
+        if status not in allowed:
+            raise ValidationError(
+                {"status": f"Invalid. Allowed: {sorted(list(allowed))}"})
+
+        qs = self.get_queryset().filter(status=status)
+
+        if ready_unpaid:
+            # Use persisted “settled” balance for fast operator queues.
+            # Treat NULL as unknown -> exclude from “unpaid” queue.
+            qs = qs.filter(settled_balance_due_cents__gt=0)
+
+        qs = qs.order_by("-created_at")
+
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            ser = self.get_serializer(page, many=True)
+            return self.get_paginated_response(ser.data)
+
+        ser = self.get_serializer(qs, many=True)
+        return Response(ser.data)
+
+    @action(detail=False, methods=["get"], url_path="metrics")
+    def metrics(self, request):
+        """
+        GET /api/orders/metrics/
+        Operator dashboard snapshot for the current tenant.
+        """
+
+        # Tenant timezone (fallback to UTC)
+        # Tenant timezone (fallback to UTC)
+        tzname = getattr(request.tenant, "timezone", None) or "UTC"
+        try:
+            tz = ZoneInfo(tzname)
+        except Exception:
+            tz = ZoneInfo("UTC")
+
+        # Define "today" in tenant-local time (date boundaries)
+        now_utc = timezone.now()
+        now_local = now_utc.astimezone(tz)
+        today_local = now_local.date()
+
+        start_local = datetime(
+            today_local.year, today_local.month, today_local.day, 0, 0, 0, tzinfo=tz
+        )
+        end_local = start_local + timedelta(days=1)
+
+        start = start_local.astimezone(dt_timezone.utc)
+        end = end_local.astimezone(dt_timezone.utc)
+
+        # 1) Orders created today
+        orders_created_today = Order.objects.filter(
+            tenant=request.tenant,
+            created_at__gte=start,
+            created_at__lt=end,
+        ).count()
+
+        # 2) Counts by status (for queues)
+        status_counts_qs = (
+            Order.objects.filter(tenant=request.tenant)
+            .values("status")
+            .annotate(count=Count("id"))
+        )
+        orders_by_status = {row["status"]: row["count"]
+                            for row in status_counts_qs}
+
+        # 3) Ready but unpaid (fast) - uses persisted settled_balance_due_cents
+        ready_unpaid_count = Order.objects.filter(
+            tenant=request.tenant,
+            status__in=["READY", "COMPLETED"],
+            settled_balance_due_cents__gt=0,
+        ).count()
+
+        # 4) Payments today (net)
+        # Only CAPTURED counts. Net = IN - OUT.
+        pay_qs = Payment.objects.filter(
+            tenant=request.tenant,
+            status=Payment.Status.CAPTURED,
+            created_at__gte=start,
+            created_at__lt=end,
+        )
+
+        payments_in_cents_today = (
+            pay_qs.filter(direction=Payment.Direction.IN)
+            .aggregate(s=Sum("amount_cents"))["s"] or 0
+        )
+        payments_out_cents_today = (
+            pay_qs.filter(direction=Payment.Direction.OUT)
+            .aggregate(s=Sum("amount_cents"))["s"] or 0
+        )
+
+        payments_net_cents_today = int(
+            payments_in_cents_today) - int(payments_out_cents_today)
+
+        # 5) Unsettled orders count (useful for cashout/settlement workflows)
+        unsettled_orders_count = Order.objects.filter(
+            tenant=request.tenant,
+            settled_at__isnull=True,
+        ).exclude(status="CANCELLED").count()
+
+        return Response({
+            "tenant": {"id": request.tenant.id, "slug": request.tenant.slug},
+            "timezone": tzname,
+            "today": str(today_local),
+            "window": {"start": start.isoformat(), "end": end.isoformat()},
+
+            "orders": {
+                "created_today": orders_created_today,
+                "by_status": orders_by_status,
+                "ready_unpaid_count": ready_unpaid_count,
+                "unsettled_count": unsettled_orders_count,
+            },
+            "payments": {
+                "in_cents_today": int(payments_in_cents_today),
+                "out_cents_today": int(payments_out_cents_today),
+                "net_cents_today": int(payments_net_cents_today),
+            },
+        })
+
+    @action(detail=False, methods=["get"], url_path="search")
+    def search(self, request):
+        """
+        /api/orders/search/?q=patel
+        /api/orders/search/?q=714
+        /api/orders/search/?q=1234
+        """
+        q = (request.query_params.get("q") or "").strip()
+
+        if not q:
+            raise ValidationError({"q": "Required. Example: ?q=patel"})
+
+        qs = self.get_queryset()
+
+        qs = qs.filter(
+            Q(customer__name__icontains=q)
+            | Q(customer__phone__icontains=q)
+            | Q(id__icontains=q)
+        ).select_related("customer")
+
+        qs = qs.order_by("-created_at")[:20]  # hard cap for counter speed
+
+        ser = self.get_serializer(qs, many=True)
+        return Response(ser.data)
 
 
 class OrderItemViewSet(viewsets.ModelViewSet):

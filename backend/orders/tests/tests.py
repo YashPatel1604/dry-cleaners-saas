@@ -52,7 +52,7 @@ class TestOrderTimeline(APITestCase):
 
         # now timeline should include payment.created (or payment.replayed if 200)
         timeline_resp = self.client.get(
-            f"/api/orders/{self.order.id}/timeline/",
+            f"/api/orders/{self.order.id}/audit/",
             **self.tenant_headers,
         )
         self.assertEqual(timeline_resp.status_code, 200)
@@ -90,7 +90,7 @@ class TestOrderTimeline(APITestCase):
         )
 
         resp = self.client.get(
-            f"/api/orders/{other_order.id}/timeline/",
+            f"/api/orders/{other_order.id}/audit/",
             **self.tenant_headers,
         )
 
