@@ -1,8 +1,10 @@
 # Dry Cleaners SaaS (Location-Based POS, Inventory, Billing)
 
-A **multi-tenant (one tenant = one store location)** dry cleaner management platform built with **Django REST Framework**, **PostgreSQL**, and **React (Vite)** using **Tailwind + shadcn/ui**.
+A **multi-tenant (one tenant = one store location)** dry cleaner management platform built with  
+**Django REST Framework**, **PostgreSQL**, and **React (Vite)** using **Tailwind + shadcn/ui**.
 
-Designed as a production-grade SaaS backend with **strict tenant isolation**, **auditable financial flows**, and **operator-first workflows**.
+Designed as a production-grade SaaS backend with **strict tenant isolation**,  
+**auditable financial flows**, and **operator-first workflows**.
 
 ---
 
@@ -22,18 +24,20 @@ Most dry cleaners still rely on paper tickets, spreadsheets, or outdated POS sys
 This project focuses on:
 
 - Fast counter workflow (drop-off → processing → pickup)
-- Item-level tracking with lifecycle timestamps
+- Item-level tracking (each garment = one OrderItem)
 - Accurate billing with immutable audit trails
 - Store-level tenant isolation for SaaS scalability
 
 ---
 
-## ✨ Features (Implemented)
+## ✨ Features
 
 ### SaaS & Security
 - ✅ Tenant isolation (one store = one tenant)
 - ✅ Tenant resolved via middleware (`X-Tenant`)
 - 🔜 RBAC (Owner / Manager / Staff)
+
+---
 
 ### Customer Management
 - ✅ Customer profiles
@@ -41,31 +45,59 @@ This project focuses on:
 - ✅ Full order history per customer
 - ✅ Attach customer to order by ID or phone
 
+---
+
 ### Orders & Lifecycle
-- ✅ Orders + OrderItems
-- ✅ Status transitions with validation
+- ✅ Orders + OrderItems (each item = one garment)
+- ✅ Validated status transitions
 - ✅ Immutable status audit log
 - ✅ Lifecycle timestamps:
   - received_at
   - in_progress_at
   - ready_at
-  - completed_at
   - picked_up_at
   - cancelled_at
 
-### Pickup Workflow (v0.3.2)
+---
+
+### Operator Workflows
+- ✅ Order queues by status  
+  (`/api/orders/queue/?status=READY`)
+- ✅ Ready-but-unpaid queue
+- 🔜 Order timeline view (operator audit visibility)
+- 🔜 Pickup preview endpoint
+
+---
+
+### Pickup Workflow
 - ✅ READY → PICKED_UP flow
 - ✅ Prevent invalid post-pickup transitions
-- ✅ Ready-but-unpaid queue
 - ✅ Explicit pickup endpoint
+- ✅ Settlement-safe pickup logic
+
+---
 
 ### Billing & Accounting
 - ✅ Itemized receipts
 - ✅ Payments (create / void / refund)
 - ✅ Post-settlement adjustments
-- ✅ Settlement snapshots (total / paid / change / balance)
-- ✅ Idempotent settlement
-- ✅ Transaction-safe math
+- ✅ Settlement snapshots:
+  - total
+  - paid
+  - change
+  - balance due
+- ✅ Idempotent settlement logic
+- ✅ Transaction-safe money math
+
+---
+
+### Tags & Printing (Planned)
+- 🔜 Per-garment tag printing
+- 🔜 Invoice number printed on each tag
+- 🔜 Optional barcode / QR support
+- 🔜 Reprint-safe tag workflow
+
+*(Printing hardware integration intentionally deferred.)*
 
 ---
 
@@ -104,21 +136,15 @@ See: `docs/ARCHITECTURE.md`
 
 ---
 
-## 🚀 Getting Started (Local)
-
-Coming soon.
-
----
-
 ## ✅ Milestones
 
 - ✅ **M0**: Repo + CI scaffold
 - ✅ **M1**: Backend + frontend scaffold
 - ✅ **M2**: Tenant isolation + middleware
-- ✅ **M3**: Customers + search + order history
+- ✅ **M3**: Customers + lookup + history
 - ✅ **M4**: Orders + items + receipts
 - ✅ **M5**: Payments + settlement + pickup
-- 🔜 **M6**: Dashboards & metrics
+- 🔄 **M6**: Operator workflows (queues, timelines, dashboards)
 - 🔜 **M7**: RBAC
 - 🔜 **M8**: Deploy staging + prod
 
