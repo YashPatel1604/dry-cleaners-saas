@@ -472,6 +472,11 @@ class OrderViewSet(viewsets.ModelViewSet):
         if not order:
             raise ValidationError({"order": "Order not found in this tenant."})
 
+            # 🔒 settlement lock (pickup is not allowed after settlement)
+        if order.settled_at is not None:
+            raise ValidationError(
+                {"order": "Order is settled and cannot be picked up."})
+
         if order.status not in ("READY", "COMPLETED"):
             raise ValidationError(
                 {"order": "Order must be READY/COMPLETED before pickup."})
