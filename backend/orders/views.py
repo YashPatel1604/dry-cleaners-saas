@@ -972,6 +972,54 @@ class OrderViewSet(viewsets.ModelViewSet):
         events.sort(key=lambda e: (e["at"], e["id"]))
         return Response(events)
 
+    @action(detail=True, methods=["get"], url_path="labels")
+    def labels(self, request, pk=None):
+        """
+        GET /api/orders/{id}/labels/
+        Returns label payloads (one per piece) for printing later.
+        Invoice number = order.id.
+        """
+        # ✅ 404 if not in this tenant (because get_queryset is tenant-scoped)
+        order = self.get_object()
+
+        # pull related data efficiently
+        order = (
+            Order.objects.filter(tenant=request.tenant, pk=order.pk)
+            .select_related("customer")
+            .prefetch_related("items__item")
+            .get()
+        )
+
+        customer_name = getattr(order.customer, "name", "") or ""
+
+        labels = []
+        seq = 1
+
+        items = sorted(list(order.items.all()),
+                       key=lambda oi: (oi.id, oi.item_id))
+        for oi in items:
+            item_name = ""
+            if getattr(oi, "item", None) is not None:
+                item_name = getattr(oi.item, "name", "") or str(oi.item)
+
+            qty = int(getattr(oi, "quantity", 1) or 1)
+            qty = max(qty, 1)
+
+            for _ in range(qty):
+                label_code = f"ORD-{order.id}-{seq:03d}"
+                labels.append({
+                    "order_id": order.id,
+                    "label_code": label_code,
+                    "sequence": seq,
+                    "customer_name": customer_name,
+                    "due_at": order.due_at.isoformat() if order.due_at else None,
+                    "item_name": item_name,
+                    "order_item_id": oi.id,
+                })
+                seq += 1
+
+        return Response({"order_id": order.id, "count": len(labels), "labels": labels})
+
     @action(detail=False, methods=["get"], url_path="queue")
     def queue(self, request):
         """
