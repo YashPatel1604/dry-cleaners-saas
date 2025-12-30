@@ -1,5 +1,7 @@
 # orders/views.py
 from datetime import timedelta, datetime
+from datetime import timezone as dt_timezone
+
 
 from django.db import transaction
 from django.utils import timezone
@@ -15,7 +17,10 @@ from payments.serializers import PaymentSerializer
 from audit.models import AuditEvent
 from .services import recalc_order_totals
 from django.db import IntegrityError
-from django.db.models import Q
+from django.db.models import Q, Count, Sum
+from zoneinfo import ZoneInfo
+from django.db.models.functions import Coalesce
+
 
 from .models import Order, OrderItem, OrderStatusEvent
 from .serializers import (
@@ -1057,6 +1062,103 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         ser = self.get_serializer(qs, many=True)
         return Response(ser.data)
+
+    @action(detail=False, methods=["get"], url_path="metrics")
+    def metrics(self, request):
+        """
+        GET /api/orders/metrics/
+        Operator dashboard snapshot for the current tenant.
+        """
+
+        # Tenant timezone (fallback to UTC)
+        # Tenant timezone (fallback to UTC)
+        tzname = getattr(request.tenant, "timezone", None) or "UTC"
+        try:
+            tz = ZoneInfo(tzname)
+        except Exception:
+            tz = ZoneInfo("UTC")
+
+        # Define "today" in tenant-local time (date boundaries)
+        now_utc = timezone.now()
+        now_local = now_utc.astimezone(tz)
+        today_local = now_local.date()
+
+        start_local = datetime(
+            today_local.year, today_local.month, today_local.day, 0, 0, 0, tzinfo=tz
+        )
+        end_local = start_local + timedelta(days=1)
+
+        start = start_local.astimezone(dt_timezone.utc)
+        end = end_local.astimezone(dt_timezone.utc)
+
+        # 1) Orders created today
+        orders_created_today = Order.objects.filter(
+            tenant=request.tenant,
+            created_at__gte=start,
+            created_at__lt=end,
+        ).count()
+
+        # 2) Counts by status (for queues)
+        status_counts_qs = (
+            Order.objects.filter(tenant=request.tenant)
+            .values("status")
+            .annotate(count=Count("id"))
+        )
+        orders_by_status = {row["status"]: row["count"]
+                            for row in status_counts_qs}
+
+        # 3) Ready but unpaid (fast) - uses persisted settled_balance_due_cents
+        ready_unpaid_count = Order.objects.filter(
+            tenant=request.tenant,
+            status__in=["READY", "COMPLETED"],
+            settled_balance_due_cents__gt=0,
+        ).count()
+
+        # 4) Payments today (net)
+        # Only CAPTURED counts. Net = IN - OUT.
+        pay_qs = Payment.objects.filter(
+            tenant=request.tenant,
+            status=Payment.Status.CAPTURED,
+            created_at__gte=start,
+            created_at__lt=end,
+        )
+
+        payments_in_cents_today = (
+            pay_qs.filter(direction=Payment.Direction.IN)
+            .aggregate(s=Sum("amount_cents"))["s"] or 0
+        )
+        payments_out_cents_today = (
+            pay_qs.filter(direction=Payment.Direction.OUT)
+            .aggregate(s=Sum("amount_cents"))["s"] or 0
+        )
+
+        payments_net_cents_today = int(
+            payments_in_cents_today) - int(payments_out_cents_today)
+
+        # 5) Unsettled orders count (useful for cashout/settlement workflows)
+        unsettled_orders_count = Order.objects.filter(
+            tenant=request.tenant,
+            settled_at__isnull=True,
+        ).exclude(status="CANCELLED").count()
+
+        return Response({
+            "tenant": {"id": request.tenant.id, "slug": request.tenant.slug},
+            "timezone": tzname,
+            "today": str(today_local),
+            "window": {"start": start.isoformat(), "end": end.isoformat()},
+
+            "orders": {
+                "created_today": orders_created_today,
+                "by_status": orders_by_status,
+                "ready_unpaid_count": ready_unpaid_count,
+                "unsettled_count": unsettled_orders_count,
+            },
+            "payments": {
+                "in_cents_today": int(payments_in_cents_today),
+                "out_cents_today": int(payments_out_cents_today),
+                "net_cents_today": int(payments_net_cents_today),
+            },
+        })
 
     @action(detail=False, methods=["get"], url_path="search")
     def search(self, request):
