@@ -779,29 +779,37 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         return Response(payload, status=201)
 
-    @action(detail=True, methods=["get"])
-    def timeline(self, request, pk=None):
-        order = self.get_object()
-
-        # safety: tenant isolation (should already be enforced by get_queryset/get_object)
-        if order.tenant_id != request.tenant.id:
-            raise ValidationError(
-                {"order": "Order does not belong to this tenant."})
+    @action(detail=True, methods=["get"], url_path="audit")
+    def audit(self, request, pk=None):
+        """
+        GET /api/orders/{id}/audit/
+        Raw audit feed (developer/compliance oriented). Includes:
+        - order audit events
+        - payment audit events for payments on this order
+        - adjustment audit events for adjustments on this order
+        """
+        order = self.get_object()  # already tenant-scoped via get_queryset()
 
         payment_ids = list(
             Payment.objects.filter(
-                tenant=request.tenant, order_id=order.id).values_list("id", flat=True)
+                tenant=request.tenant, order_id=order.id
+            ).values_list("id", flat=True)
         )
         adjustment_ids = list(
             Adjustment.objects.filter(
-                tenant=request.tenant, order_id=order.id).values_list("id", flat=True)
+                tenant=request.tenant, order_id=order.id
+            ).values_list("id", flat=True)
         )
 
-        qs = AuditEvent.objects.filter(tenant=request.tenant).filter(
-            Q(entity_type="order", entity_id=str(order.id))
-            | Q(entity_type="payment", entity_id__in=[str(i) for i in payment_ids])
-            | Q(entity_type="adjustment", entity_id__in=[str(i) for i in adjustment_ids])
-        ).order_by("created_at")
+        qs = (
+            AuditEvent.objects.filter(tenant=request.tenant)
+            .filter(
+                Q(entity_type="order", entity_id=str(order.id))
+                | Q(entity_type="payment", entity_id__in=[str(i) for i in payment_ids])
+                | Q(entity_type="adjustment", entity_id__in=[str(i) for i in adjustment_ids])
+            )
+            .order_by("created_at")
+        )
 
         data = [
             {
@@ -820,13 +828,149 @@ class OrderViewSet(viewsets.ModelViewSet):
             for e in qs
         ]
 
-        return Response(
-            {
-                "order_id": order.id,
-                "count": len(data),
-                "events": data,
-            }
+        return Response({"order_id": order.id, "count": len(data), "events": data})
+
+    @action(detail=True, methods=["get"], url_path="timeline")
+    def timeline(self, request, pk=None):
+        """
+        GET /api/orders/{id}/timeline/
+        Operator-friendly merged timeline:
+        - order.created (derived)
+        - status.change (OrderStatusEvent)
+        - payment.* (Payment)
+        - adjustment.* (Adjustment)
+        - settlement.snapshot (derived from Order.settled_* fields)
+        """
+        order = self.get_object()  # tenant-safe
+
+        def actor_from_user(user):
+            if user:
+                return {
+                    "type": "USER",
+                    "id": str(user.id),
+                    "label": getattr(user, "username", "") or str(user),
+                }
+            return {"type": "SYSTEM", "id": "", "label": "system"}
+
+        def amount_obj(cents: int):
+            return {"currency": "USD", "cents": int(cents)}
+
+        events = []
+
+        # 1) Order created (derived)
+        events.append({
+            "id": f"order:{order.id}",
+            "at": order.created_at,
+            "kind": "order.created",
+            "title": "Order created",
+            "summary": f"Order #{order.id} created",
+            "actor": {"type": "SYSTEM", "id": "", "label": "system"},
+            "amount": None,
+            "refs": {"order_id": order.id, "status_event_id": None, "payment_id": None, "adjustment_id": None},
+            "meta": {},
+        })
+
+        # 2) Status events
+        status_events = (
+            OrderStatusEvent.objects
+            .filter(tenant=request.tenant, order=order)
+            .select_related("changed_by")
+            .order_by("created_at")
         )
+        for se in status_events:
+            events.append({
+                "id": f"status:{se.id}",
+                "at": se.created_at,
+                "kind": "status.change",
+                "title": "Status changed",
+                "summary": f"{se.from_status} → {se.to_status}",
+                "actor": actor_from_user(se.changed_by),
+                "amount": None,
+                "refs": {"order_id": order.id, "status_event_id": se.id, "payment_id": None, "adjustment_id": None},
+                "meta": {"from_status": se.from_status, "to_status": se.to_status, "note": se.note or ""},
+            })
+
+        # 3) Payments
+        payments = (
+            Payment.objects
+            .filter(tenant=request.tenant, order=order)
+            .order_by("created_at")
+        )
+        for p in payments:
+            signed = int(
+                p.amount_cents) if p.direction == Payment.Direction.IN else -int(p.amount_cents)
+            kind = "payment.created" if p.status == Payment.Status.CAPTURED else "payment.voided"
+            title = "Payment received" if kind == "payment.created" else "Payment voided"
+
+            events.append({
+                "id": f"payment:{p.id}",
+                "at": p.created_at,
+                "kind": kind,
+                "title": title,
+                "summary": f"{p.method} {'+' if signed >= 0 else ''}{signed/100:.2f}",
+                "actor": {"type": "SYSTEM", "id": "", "label": "system"},
+                "amount": amount_obj(signed),
+                "refs": {"order_id": order.id, "status_event_id": None, "payment_id": p.id, "adjustment_id": None},
+                "meta": {
+                    "method": p.method,
+                    "status": p.status,
+                    "direction": p.direction,
+                    "reference": p.reference,
+                    "note": p.note or "",
+                },
+            })
+
+        # 4) Adjustments
+        adjustments = (
+            Adjustment.objects
+            .filter(tenant=request.tenant, order=order)
+            .order_by("created_at")
+        )
+        for a in adjustments:
+            signed = int(
+                a.amount_cents) if a.direction == Adjustment.Direction.IN else -int(a.amount_cents)
+            kind = "adjustment.applied" if a.status == Adjustment.Status.APPLIED else "adjustment.voided"
+            title = "Adjustment applied" if kind == "adjustment.applied" else "Adjustment voided"
+
+            events.append({
+                "id": f"adjustment:{a.id}",
+                "at": a.created_at,
+                "kind": kind,
+                "title": title,
+                "summary": f"{a.kind} {'+' if signed >= 0 else ''}{signed/100:.2f}",
+                "actor": {"type": "SYSTEM", "id": "", "label": "system"},
+                "amount": amount_obj(signed),
+                "refs": {"order_id": order.id, "status_event_id": None, "payment_id": None, "adjustment_id": a.id},
+                "meta": {
+                    "kind": a.kind,
+                    "status": a.status,
+                    "direction": a.direction,
+                    "reference": a.reference,
+                    "note": a.note or "",
+                },
+            })
+
+        # 5) Settlement snapshot (derived)
+        if order.settled_at is not None:
+            events.append({
+                "id": f"order:{order.id}:settlement",
+                "at": order.settled_at,
+                "kind": "settlement.snapshot",
+                "title": "Settlement snapshot",
+                "summary": "Totals locked for accounting",
+                "actor": {"type": "SYSTEM", "id": "", "label": "system"},
+                "amount": None,
+                "refs": {"order_id": order.id, "status_event_id": None, "payment_id": None, "adjustment_id": None},
+                "meta": {
+                    "settled_total_cents": order.settled_total_cents,
+                    "settled_paid_cents": order.settled_paid_cents,
+                    "settled_change_cents": order.settled_change_cents,
+                    "settled_balance_due_cents": order.settled_balance_due_cents,
+                },
+            })
+
+        events.sort(key=lambda e: (e["at"], e["id"]))
+        return Response(events)
 
     @action(detail=False, methods=["get"], url_path="queue")
     def queue(self, request):
@@ -865,7 +1009,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         ser = self.get_serializer(qs, many=True)
         return Response(ser.data)
-    
+
     @action(detail=False, methods=["get"], url_path="search")
     def search(self, request):
         """
