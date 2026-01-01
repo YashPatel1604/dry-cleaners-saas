@@ -477,6 +477,12 @@ class OrderViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"order": "Order is settled and cannot be picked up."})
 
+            # ✅ idempotency: if already picked up, return current state
+        if order.status == "PICKED_UP":
+            resp = Response(OrderSerializer(order).data, status=200)
+            resp["Idempotent-Replay"] = "true"
+            return resp
+
         if order.status not in ("READY", "COMPLETED"):
             raise ValidationError(
                 {"order": "Order must be READY/COMPLETED before pickup."})
