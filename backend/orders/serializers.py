@@ -225,27 +225,27 @@ class OrderReceiptSerializer(serializers.ModelSerializer):
         for a in qs.all():
             if a.status != Adjustment.Status.APPLIED:
                 continue
+            amt = int(a.amount_cents or 0)
             if a.direction == Adjustment.Direction.IN:
-                net += int(a.amount_cents)
+                net += amt
             else:
-                net -= int(a.amount_cents)
+                net -= amt
         return net
 
     def get_net_paid_cents(self, obj):
-        return int(obj.paid_cents) + int(self.get_adjustments_net_cents(obj))
+        return int(getattr(obj, "paid_cents", 0) or 0) + int(self.get_adjustments_net_cents(obj) or 0)
 
     def get_balance_due_cents(self, obj):
-        return max(int(obj.total_cents) - int(self.get_net_paid_cents(obj)), 0)
+        total = int(getattr(obj, "total_cents", 0) or 0)
+        net_paid = int(self.get_net_paid_cents(obj) or 0)
+        return max(total - net_paid, 0)
 
     def get_change_due_cents(self, obj):
         """
         Option A (explicit OUT for change):
         - If there is a captured OUT cash payment (change/refund), then "change due" is 0
-            because the drawer already recorded the payout.
+        because the drawer already recorded the payout.
         - Otherwise, show overpayment (net_paid - total) so the counter knows change is owed.
-
-        Note: "net_paid_cents" already includes adjustments (post-settlement), so change due
-        will also reflect those if you ever use them.
         """
         # If we already recorded an OUT payment, we don't want the receipt to still say "change due"
         try:
@@ -260,7 +260,14 @@ class OrderReceiptSerializer(serializers.ModelSerializer):
         except Exception:
             pass
 
-        # Otherwise show the overpayment amount (customer handed more than total)
-        net_paid = int(self.get_net_paid_cents(obj))
-        total = int(obj.total_cents)
+        net_paid = int(self.get_net_paid_cents(obj) or 0)
+
+        # Prefer settlement snapshot totals if settled (reprint-stable),
+        # otherwise use current total (NULL-safe).
+        if getattr(obj, "settled_at", None) is not None:
+            total_raw = getattr(obj, "settled_total_cents", None)
+        else:
+            total_raw = getattr(obj, "total_cents", None)
+
+        total = int(total_raw or 0)
         return max(net_paid - total, 0)

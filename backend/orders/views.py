@@ -5,6 +5,9 @@ from datetime import timezone as dt_timezone
 
 from django.db import transaction
 from django.utils import timezone
+from django.db import IntegrityError
+from django.db.models import Q, Count, Sum
+from zoneinfo import ZoneInfo
 
 from rest_framework import viewsets, permissions
 from rest_framework.decorators import action
@@ -16,10 +19,6 @@ from payments.models import Payment, Adjustment
 from payments.serializers import PaymentSerializer
 from audit.models import AuditEvent
 from .services import recalc_order_totals
-from django.db import IntegrityError
-from django.db.models import Q, Count, Sum
-from zoneinfo import ZoneInfo
-from django.db.models.functions import Coalesce
 
 
 from .models import Order, OrderItem, OrderStatusEvent
@@ -170,8 +169,22 @@ class OrderViewSet(viewsets.ModelViewSet):
             raise ValidationError({"order": "Order not found in this tenant."})
 
         recalc_order_totals(order)
-        order.refresh_from_db(
-            fields=["subtotal_cents", "tax_cents", "total_cents", "paid_cents", "settled_at"])
+        order.refresh_from_db(fields=[
+            "subtotal_cents",
+            "tax_cents",
+            "total_cents",
+            "paid_cents",
+            "settled_at",
+            "settled_total_cents",
+            "settled_paid_cents",
+            "settled_change_cents",
+            "settled_balance_due_cents",
+        ])
+
+        # ✅ Reprint-stable: once settled, receipts must reflect snapshot fields.
+        if order.settled_at is not None:
+            order.total_cents = order.settled_total_cents
+            order.paid_cents = order.settled_paid_cents
 
         return Response(OrderReceiptSerializer(order).data)
 
