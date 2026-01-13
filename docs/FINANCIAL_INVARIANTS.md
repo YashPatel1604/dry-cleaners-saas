@@ -88,6 +88,10 @@ Receipt summary endpoint:
 Operator safety test suite:
 - Run the operator workflow + invariant checks with: pytest -m operator_safety
 
+Queue clarity (ready-unpaid):
+- /api/orders/queue/?status=READY&ready_unpaid=1 uses settled-only balances.
+- Response includes header X-Ready-Unpaid-Mode: settled_only (and ready_unpaid_mode in paginated responses).
+
 ---
 
 ## Settlement (Financial Lock)
