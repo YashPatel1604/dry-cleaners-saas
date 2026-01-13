@@ -278,12 +278,18 @@ class OrderReceiptSerializer(serializers.ModelSerializer):
         try:
             payments_qs = getattr(obj, "payments", None)
             if payments_qs is not None:
-                has_captured_out = payments_qs.filter(
-                    status=Payment.Status.CAPTURED,
-                    direction=Payment.Direction.OUT,
-                ).exists()
-                if has_captured_out:
-                    return 0
+                prefetched = getattr(obj, "_prefetched_objects_cache", {}).get("payments")
+                if prefetched is not None:
+                    for p in prefetched:
+                        if p.status == Payment.Status.CAPTURED and p.direction == Payment.Direction.OUT:
+                            return 0
+                else:
+                    has_captured_out = payments_qs.filter(
+                        status=Payment.Status.CAPTURED,
+                        direction=Payment.Direction.OUT,
+                    ).exists()
+                    if has_captured_out:
+                        return 0
         except Exception:
             pass
 

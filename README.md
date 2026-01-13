@@ -65,7 +65,8 @@ This project focuses on:
   (`/api/orders/queue/?status=READY`)
 - ✅ Ready-but-unpaid queue
 - ✅ Order timeline view (operator audit visibility)
-- ✅ Receipt summary endpoint
+- ✅ Receipt summary endpoint  
+  (`/api/orders/{id}/receipt/summary/`)
 - 🔜 Pickup preview endpoint
 
 ---
@@ -156,6 +157,8 @@ See: `docs/ARCHITECTURE.md`
 Operator safety suite:
 
 `pytest -m operator_safety` (run from `backend/`)
+
+This suite locks operator‑critical response shapes and financial invariants.
 
 ---
 

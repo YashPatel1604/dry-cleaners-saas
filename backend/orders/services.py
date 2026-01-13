@@ -63,7 +63,12 @@ def receipt_financials_for_order(order: Order) -> Dict[str, int]:
     """
     from .serializers import OrderReceiptSerializer
 
-    data = OrderReceiptSerializer(order).data
+    ser = OrderReceiptSerializer(order)
+    data = {
+        "net_paid_cents": ser.get_net_paid_cents(order),
+        "balance_due_cents": ser.get_balance_due_cents(order),
+        "change_due_cents": ser.get_change_due_cents(order),
+    }
     return {
         "net_paid_cents": int(data.get("net_paid_cents") or 0),
         "balance_due_cents": int(data.get("balance_due_cents") or 0),

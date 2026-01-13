@@ -77,7 +77,11 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         # keep list/retrieve fast
-        return Order.objects.filter(tenant=self.request.tenant).select_related("customer")
+        return (
+            Order.objects.filter(tenant=self.request.tenant)
+            .select_related("customer")
+            .prefetch_related("payments", "adjustments")
+        )
 
     def perform_create(self, serializer):
         customer_id = serializer.validated_data["customer"].id
