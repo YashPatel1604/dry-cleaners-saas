@@ -132,7 +132,9 @@ class TestOrderTimeline(TestCase):
         required_keys = {
             "id",
             "at",
+            "created_at",
             "kind",
+            "event_type",
             "title",
             "summary",
             "actor",

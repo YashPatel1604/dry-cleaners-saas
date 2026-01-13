@@ -977,10 +977,28 @@ class OrderViewSet(viewsets.ModelViewSet):
         def amount_obj(cents: int):
             return {"currency": "USD", "cents": int(cents)}
 
+        def event_type_priority(kind: str) -> int:
+            priority = {
+                "order.created": 10,
+                "status.change": 20,
+                "payment.created": 30,
+                "payment.voided": 31,
+                "adjustment.applied": 40,
+                "adjustment.voided": 41,
+                "settlement.snapshot": 50,
+            }
+            return priority.get(kind, 99)
+
+        def normalize_event(e: dict) -> dict:
+            # Preserve existing keys while adding explicit aliases for stability.
+            e["event_type"] = e.get("kind")
+            e["created_at"] = e.get("at")
+            return e
+
         events = []
 
         # 1) Order created (derived)
-        events.append({
+        events.append(normalize_event({
             "id": f"order:{order.id}",
             "at": order.created_at,
             "kind": "order.created",
@@ -990,7 +1008,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             "amount": None,
             "refs": {"order_id": order.id, "status_event_id": None, "payment_id": None, "adjustment_id": None},
             "meta": {},
-        })
+        }))
 
         # 2) Status events
         status_events = (
@@ -1000,7 +1018,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             .order_by("created_at")
         )
         for se in status_events:
-            events.append({
+            events.append(normalize_event({
                 "id": f"status:{se.id}",
                 "at": se.created_at,
                 "kind": "status.change",
@@ -1010,7 +1028,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "amount": None,
                 "refs": {"order_id": order.id, "status_event_id": se.id, "payment_id": None, "adjustment_id": None},
                 "meta": {"from_status": se.from_status, "to_status": se.to_status, "note": se.note or ""},
-            })
+            }))
 
         # 3) Payments
         payments = (
@@ -1024,7 +1042,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             kind = "payment.created" if p.status == Payment.Status.CAPTURED else "payment.voided"
             title = "Payment received" if kind == "payment.created" else "Payment voided"
 
-            events.append({
+            events.append(normalize_event({
                 "id": f"payment:{p.id}",
                 "at": p.created_at,
                 "kind": kind,
@@ -1040,7 +1058,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     "reference": p.reference,
                     "note": p.note or "",
                 },
-            })
+            }))
 
         # 4) Adjustments
         adjustments = (
@@ -1054,7 +1072,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             kind = "adjustment.applied" if a.status == Adjustment.Status.APPLIED else "adjustment.voided"
             title = "Adjustment applied" if kind == "adjustment.applied" else "Adjustment voided"
 
-            events.append({
+            events.append(normalize_event({
                 "id": f"adjustment:{a.id}",
                 "at": a.created_at,
                 "kind": kind,
@@ -1070,11 +1088,11 @@ class OrderViewSet(viewsets.ModelViewSet):
                     "reference": a.reference,
                     "note": a.note or "",
                 },
-            })
+            }))
 
         # 5) Settlement snapshot (derived)
         if order.settled_at is not None:
-            events.append({
+            events.append(normalize_event({
                 "id": f"order:{order.id}:settlement",
                 "at": order.settled_at,
                 "kind": "settlement.snapshot",
@@ -1089,9 +1107,13 @@ class OrderViewSet(viewsets.ModelViewSet):
                     "settled_change_cents": order.settled_change_cents,
                     "settled_balance_due_cents": order.settled_balance_due_cents,
                 },
-            })
+            }))
 
-        events.sort(key=lambda e: (e["at"], e["id"]))
+        events.sort(key=lambda e: (
+            e.get("at"),
+            event_type_priority(e.get("kind")),
+            e.get("id"),
+        ))
         return Response(events)
 
     @action(detail=True, methods=["get"], url_path="labels")
