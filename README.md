@@ -64,7 +64,8 @@ This project focuses on:
 - ✅ Order queues by status  
   (`/api/orders/queue/?status=READY`)
 - ✅ Ready-but-unpaid queue
-- 🔜 Order timeline view (operator audit visibility)
+- ✅ Order timeline view (operator audit visibility)
+- ✅ Receipt summary endpoint
 - 🔜 Pickup preview endpoint
 
 ---
@@ -144,9 +145,17 @@ See: `docs/ARCHITECTURE.md`
 - ✅ **M3**: Customers + lookup + history
 - ✅ **M4**: Orders + items + receipts
 - ✅ **M5**: Payments + settlement + pickup
-- 🔄 **M6**: Operator workflows (queues, timelines, dashboards)
+- ✅ **M6**: Operator workflows (queues, timelines, dashboards)
 - 🔜 **M7**: RBAC
 - 🔜 **M8**: Deploy staging + prod
+
+---
+
+## 🧪 Testing
+
+Operator safety suite:
+
+`pytest -m operator_safety` (run from `backend/`)
 
 ---
 
