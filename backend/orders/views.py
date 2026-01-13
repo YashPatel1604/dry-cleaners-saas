@@ -188,6 +188,57 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         return Response(OrderReceiptSerializer(order).data)
 
+    @action(detail=True, methods=["get"], url_path="receipt/summary")
+    def receipt_summary(self, request, pk=None):
+        """
+        GET /api/orders/{id}/receipt/summary/
+        Returns receipt financials without itemized lines.
+        """
+        order = (
+            Order.objects.filter(tenant=request.tenant, pk=pk)
+            .select_related("customer")
+            .prefetch_related("items__item", "payments", "adjustments")
+            .first()
+        )
+        if not order:
+            raise ValidationError({"order": "Order not found in this tenant."})
+
+        recalc_order_totals(order)
+        order.refresh_from_db(fields=[
+            "subtotal_cents",
+            "tax_cents",
+            "total_cents",
+            "paid_cents",
+            "settled_at",
+            "settled_total_cents",
+            "settled_paid_cents",
+        ])
+
+        if order.settled_at is not None:
+            order.total_cents = order.settled_total_cents
+            order.paid_cents = order.settled_paid_cents
+
+        data = OrderReceiptSerializer(order).data
+        summary_fields = {
+            "id",
+            "status",
+            "due_at",
+            "notes",
+            "created_at",
+            "settled_at",
+            "customer",
+            "subtotal_cents",
+            "tax_cents",
+            "total_cents",
+            "paid_cents",
+            "adjustments_net_cents",
+            "net_paid_cents",
+            "balance_due_cents",
+            "change_due_cents",
+        }
+
+        return Response({k: data.get(k) for k in summary_fields})
+
     @action(detail=True, methods=["get"], url_path="receipt/print")
     def receipt_print(self, request, pk=None):
         order = (
@@ -638,7 +689,9 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         if order.settled_at is not None:
             data = OrderReceiptSerializer(order).data
-            return Response(data)
+            resp = Response(data)
+            resp["Idempotent-Replay"] = "true"
+            return resp
 
         recalc_order_totals(order)
         order.refresh_from_db(fields=["total_cents", "paid_cents"])
@@ -656,7 +709,9 @@ class OrderViewSet(viewsets.ModelViewSet):
 
             if locked.settled_at is not None:
                 data = OrderReceiptSerializer(locked).data
-                return Response(data)
+                resp = Response(data)
+                resp["Idempotent-Replay"] = "true"
+                return resp
 
             locked.settled_at = timezone.now()
             locked.settled_total_cents = settled_total

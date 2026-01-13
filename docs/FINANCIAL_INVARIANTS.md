@@ -81,6 +81,13 @@ Receipt change due:
 - If there exists a CAPTURED OUT payment for the order, change_due_cents must be 0.
 - Otherwise change_due_cents = max(net_paid_cents - total, 0)
 
+Receipt summary endpoint:
+- GET /api/orders/{id}/receipt/summary/ returns only receipt financials (no item lines).
+- The summary payload must be derived from the same receipt view model as full receipts.
+
+Operator safety test suite:
+- Run the operator workflow + invariant checks with: pytest -m operator_safety
+
 ---
 
 ## Settlement (Financial Lock)
@@ -141,4 +148,3 @@ Tests enforce:
 - receipt correctness
 
 Any change to financial logic must update tests and document the reason.
-

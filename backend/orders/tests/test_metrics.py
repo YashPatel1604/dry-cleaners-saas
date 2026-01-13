@@ -1,8 +1,10 @@
-from datetime import timedelta
+from datetime import timedelta, datetime
+from zoneinfo import ZoneInfo
 from django.test import TestCase
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
+import pytest
 from rest_framework.test import APIClient
 
 from tenants.models import Tenant
@@ -11,6 +13,8 @@ from orders.models import Order
 from payments.models import Payment
 
 User = get_user_model()
+
+pytestmark = pytest.mark.operator_safety
 
 
 class TestOrderMetrics(TestCase):
@@ -123,3 +127,67 @@ class TestOrderMetrics(TestCase):
         self.assertEqual(data["payments"]["in_cents_today"], 2000)
         self.assertEqual(data["payments"]["out_cents_today"], 300)
         self.assertEqual(data["payments"]["net_cents_today"], 1700)
+
+    def test_metrics_ignores_voided_payments(self):
+        Payment.objects.create(
+            tenant=self.tenant,
+            order=self.o_ready,
+            method=Payment.Method.CARD,
+            status=Payment.Status.VOIDED,
+            direction=Payment.Direction.IN,
+            amount_cents=7777,
+            reference="voided",
+        )
+
+        r = self.client.get("/api/orders/metrics/")
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+
+        self.assertEqual(data["payments"]["in_cents_today"], 2000)
+        self.assertEqual(data["payments"]["out_cents_today"], 300)
+        self.assertEqual(data["payments"]["net_cents_today"], 1700)
+
+
+class TestOrderMetricsTimezoneWindow(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+        self.tenant = Tenant.objects.create(name="T TZ", slug="t-tz")
+        self.user = User.objects.create_user(username="admin", password="pass")
+        self.client.force_authenticate(user=self.user)
+        self.client.credentials(HTTP_X_TENANT=self.tenant.slug)
+
+        self.customer = Customer.objects.create(
+            tenant=self.tenant, name="Patel", phone="7140000000"
+        )
+
+    def test_metrics_created_today_uses_tenant_timezone(self):
+        now_utc = timezone.now()
+        tz = ZoneInfo("UTC")
+        now_local = now_utc.astimezone(tz)
+        today_local = now_local.date()
+
+        start_local = datetime(
+            today_local.year, today_local.month, today_local.day, 0, 0, 0, tzinfo=tz
+        )
+        start = start_local.astimezone(timezone.UTC)
+
+        in_order = Order.objects.create(
+            tenant=self.tenant, customer=self.customer, status="RECEIVED"
+        )
+        out_order = Order.objects.create(
+            tenant=self.tenant, customer=self.customer, status="RECEIVED"
+        )
+
+        Order.objects.filter(id=in_order.id).update(
+            created_at=start + timedelta(minutes=5)
+        )
+        Order.objects.filter(id=out_order.id).update(
+            created_at=start - timedelta(minutes=5)
+        )
+
+        r = self.client.get("/api/orders/metrics/")
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+
+        self.assertEqual(data["orders"]["created_today"], 1)

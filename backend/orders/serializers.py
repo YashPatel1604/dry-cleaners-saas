@@ -16,6 +16,10 @@ ORDER_STATUS_TRANSITIONS = {
 
 
 class OrderSerializer(serializers.ModelSerializer):
+    net_paid_cents = serializers.SerializerMethodField()
+    balance_due_cents = serializers.SerializerMethodField()
+    change_due_cents = serializers.SerializerMethodField()
+
     class Meta:
         model = Order
         fields = [
@@ -28,6 +32,9 @@ class OrderSerializer(serializers.ModelSerializer):
             "tax_cents",
             "total_cents",
             "paid_cents",
+            "net_paid_cents",
+            "balance_due_cents",
+            "change_due_cents",
             "settled_at",
             "created_at",
             "received_at", "in_progress_at", "ready_at", "completed_at", "cancelled_at", "picked_up_at",
@@ -39,6 +46,9 @@ class OrderSerializer(serializers.ModelSerializer):
             "tax_cents",
             "total_cents",
             "paid_cents",
+            "net_paid_cents",
+            "balance_due_cents",
+            "change_due_cents",
             "settled_at", "received_at", "in_progress_at", "ready_at", "completed_at", "cancelled_at", "picked_up_at",
         ]
 
@@ -62,6 +72,23 @@ class OrderSerializer(serializers.ModelSerializer):
                     })
 
         return attrs
+
+    def _receipt_financials(self, obj):
+        cached = getattr(obj, "_receipt_financials_cache", None)
+        if cached is None:
+            from .services import receipt_financials_for_order
+            cached = receipt_financials_for_order(obj)
+            setattr(obj, "_receipt_financials_cache", cached)
+        return cached
+
+    def get_net_paid_cents(self, obj):
+        return self._receipt_financials(obj)["net_paid_cents"]
+
+    def get_balance_due_cents(self, obj):
+        return self._receipt_financials(obj)["balance_due_cents"]
+
+    def get_change_due_cents(self, obj):
+        return self._receipt_financials(obj)["change_due_cents"]
 
 
 class OrderItemSerializer(serializers.ModelSerializer):

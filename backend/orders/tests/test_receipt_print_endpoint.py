@@ -1,6 +1,8 @@
 # orders/tests/test_receipt_print_endpoint.py
 from orders.services import recalc_order_totals
 import pytest
+
+pytestmark = pytest.mark.operator_safety
 from django.utils import timezone
 from rest_framework.test import APIClient
 

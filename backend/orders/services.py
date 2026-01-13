@@ -57,6 +57,20 @@ def recalc_order_totals(order: Order, tax_rate: float = 0.08) -> None:
         )
 
 
+def receipt_financials_for_order(order: Order) -> Dict[str, int]:
+    """
+    Derive receipt financial fields using the receipt serializer path.
+    """
+    from .serializers import OrderReceiptSerializer
+
+    data = OrderReceiptSerializer(order).data
+    return {
+        "net_paid_cents": int(data.get("net_paid_cents") or 0),
+        "balance_due_cents": int(data.get("balance_due_cents") or 0),
+        "change_due_cents": int(data.get("change_due_cents") or 0),
+    }
+
+
 # --- Receipt presenter + PDF rendering (Step 4.1) ----------------------------
 
 @dataclass(frozen=True)

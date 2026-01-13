@@ -1,4 +1,5 @@
 from django.test import TestCase
+import pytest
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -9,6 +10,8 @@ from orders.models import Order, OrderStatusEvent
 from payments.models import Payment, Adjustment
 
 User = get_user_model()
+
+pytestmark = pytest.mark.operator_safety
 
 
 class TestOrderTimeline(TestCase):
@@ -102,3 +105,45 @@ class TestOrderTimeline(TestCase):
         events = r.json()
         ats = [e["at"] for e in events]
         self.assertEqual(ats, sorted(ats))
+
+    def test_timeline_event_schema(self):
+        OrderStatusEvent.objects.create(
+            tenant=self.tenant,
+            order=self.order,
+            from_status="RECEIVED",
+            to_status="READY",
+            changed_by=self.user,
+        )
+
+        Payment.objects.create(
+            tenant=self.tenant,
+            order=self.order,
+            method=Payment.Method.CARD,
+            status=Payment.Status.CAPTURED,
+            direction=Payment.Direction.IN,
+            amount_cents=1200,
+            reference="p-schema",
+        )
+
+        r = self.client.get(f"/api/orders/{self.order.id}/timeline/")
+        self.assertEqual(r.status_code, 200)
+
+        events = r.json()
+        required_keys = {
+            "id",
+            "at",
+            "kind",
+            "title",
+            "summary",
+            "actor",
+            "amount",
+            "refs",
+            "meta",
+        }
+
+        for e in events:
+            self.assertEqual(set(e.keys()), required_keys)
+            self.assertIn("type", e["actor"])
+            self.assertIn("id", e["actor"])
+            self.assertIn("label", e["actor"])
+            self.assertIn("order_id", e["refs"])
