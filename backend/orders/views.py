@@ -5,6 +5,10 @@ from datetime import timezone as dt_timezone
 
 from django.db import transaction
 from django.utils import timezone
+from django.http import HttpResponse
+from django.db import IntegrityError
+from django.db.models import Q, Count, Sum
+from zoneinfo import ZoneInfo
 
 from rest_framework import viewsets, permissions
 from rest_framework.decorators import action
@@ -15,12 +19,7 @@ from customers.models import Customer, normalize_phone_us
 from payments.models import Payment, Adjustment
 from payments.serializers import PaymentSerializer
 from audit.models import AuditEvent
-from .services import recalc_order_totals
-from django.db import IntegrityError
-from django.db.models import Q, Count, Sum
-from zoneinfo import ZoneInfo
-from django.db.models.functions import Coalesce
-
+from .services import recalc_order_totals, ReceiptPresenter, render_receipt_pdf
 
 from .models import Order, OrderItem, OrderStatusEvent
 from .serializers import (
@@ -170,10 +169,58 @@ class OrderViewSet(viewsets.ModelViewSet):
             raise ValidationError({"order": "Order not found in this tenant."})
 
         recalc_order_totals(order)
-        order.refresh_from_db(
-            fields=["subtotal_cents", "tax_cents", "total_cents", "paid_cents", "settled_at"])
+        order.refresh_from_db(fields=[
+            "subtotal_cents",
+            "tax_cents",
+            "total_cents",
+            "paid_cents",
+            "settled_at",
+            "settled_total_cents",
+            "settled_paid_cents",
+            "settled_change_cents",
+            "settled_balance_due_cents",
+        ])
+
+        # ✅ Reprint-stable: once settled, receipts must reflect snapshot fields.
+        if order.settled_at is not None:
+            order.total_cents = order.settled_total_cents
+            order.paid_cents = order.settled_paid_cents
 
         return Response(OrderReceiptSerializer(order).data)
+
+    @action(detail=True, methods=["get"], url_path="receipt/print")
+    def receipt_print(self, request, pk=None):
+        order = (
+            Order.objects.filter(tenant=request.tenant, pk=pk)
+            .select_related("customer")
+            .prefetch_related("items__item", "payments", "adjustments")
+            .first()
+        )
+        if not order:
+            raise ValidationError({"order": "Order not found in this tenant."})
+
+        # Keep consistent with JSON receipt endpoint
+        recalc_order_totals(order)
+        order.refresh_from_db(fields=[
+            "subtotal_cents",
+            "tax_cents",
+            "total_cents",
+            "paid_cents",
+            "settled_at",
+            "settled_total_cents",
+            "settled_paid_cents",
+        ])
+
+        if order.settled_at is not None:
+            order.total_cents = order.settled_total_cents
+            order.paid_cents = order.settled_paid_cents
+
+        receipt_dict = ReceiptPresenter(order).build()
+        pdf_bytes = render_receipt_pdf(receipt_dict)
+
+        resp = HttpResponse(pdf_bytes, content_type="application/pdf")
+        resp["Content-Disposition"] = f'inline; filename="receipt-order-{order.id}.pdf"'
+        return resp
 
     @action(detail=True, methods=["post"], url_path="pickup-payment")
     def pickup_payment(self, request, pk=None):
@@ -471,6 +518,17 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
         if not order:
             raise ValidationError({"order": "Order not found in this tenant."})
+
+            # 🔒 settlement lock (pickup is not allowed after settlement)
+        if order.settled_at is not None:
+            raise ValidationError(
+                {"order": "Order is settled and cannot be picked up."})
+
+            # ✅ idempotency: if already picked up, return current state
+        if order.status == "PICKED_UP":
+            resp = Response(OrderSerializer(order).data, status=200)
+            resp["Idempotent-Replay"] = "true"
+            return resp
 
         if order.status not in ("READY", "COMPLETED"):
             raise ValidationError(

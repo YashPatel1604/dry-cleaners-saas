@@ -8,7 +8,6 @@ services:
       POSTGRES_PASSWORD: drycleaners
     ports:
       - "5433:5432"
-
     volumes:
       - drycleaners_pgdata:/var/lib/postgresql/data
 
