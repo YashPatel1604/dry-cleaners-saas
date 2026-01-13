@@ -1165,20 +1165,30 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         qs = self.get_queryset().filter(status=status)
 
+        ready_unpaid_mode = None
         if ready_unpaid:
             # Use persisted “settled” balance for fast operator queues.
             # Treat NULL as unknown -> exclude from “unpaid” queue.
             qs = qs.filter(settled_balance_due_cents__gt=0)
+            ready_unpaid_mode = "settled_only"
 
         qs = qs.order_by("-created_at")
 
         page = self.paginate_queryset(qs)
         if page is not None:
             ser = self.get_serializer(page, many=True)
-            return self.get_paginated_response(ser.data)
+            resp = self.get_paginated_response(ser.data)
+            if ready_unpaid_mode:
+                resp["X-Ready-Unpaid-Mode"] = ready_unpaid_mode
+                if isinstance(resp.data, dict):
+                    resp.data["ready_unpaid_mode"] = ready_unpaid_mode
+            return resp
 
         ser = self.get_serializer(qs, many=True)
-        return Response(ser.data)
+        resp = Response(ser.data)
+        if ready_unpaid_mode:
+            resp["X-Ready-Unpaid-Mode"] = ready_unpaid_mode
+        return resp
 
     @action(detail=False, methods=["get"], url_path="metrics")
     def metrics(self, request):

@@ -1,4 +1,5 @@
 from django.test import TestCase
+import pytest
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
@@ -7,6 +8,8 @@ from customers.models import Customer
 from orders.models import Order
 
 User = get_user_model()
+
+pytestmark = pytest.mark.operator_safety
 
 
 class TestOrderQueue(TestCase):
@@ -92,8 +95,11 @@ class TestOrderQueue(TestCase):
     def test_queue_ready_unpaid(self):
         r = self.client.get("/api/orders/queue/?status=READY&ready_unpaid=1")
         self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get("X-Ready-Unpaid-Mode"), "settled_only")
 
         data = r.json()
+        if isinstance(data, dict):
+            self.assertEqual(data.get("ready_unpaid_mode"), "settled_only")
         results = self._results(data)
         ids = {o["id"] for o in results}
 

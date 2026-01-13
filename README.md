@@ -63,7 +63,8 @@ This project focuses on:
 ### Operator Workflows
 - ✅ Order queues by status  
   (`/api/orders/queue/?status=READY`)
-- ✅ Ready-but-unpaid queue
+- ✅ Ready-but-unpaid queue  
+  (`/api/orders/queue/?status=READY&ready_unpaid=1` uses settled-only balances; see response header)
 - ✅ Order timeline view (operator audit visibility)
 - ✅ Receipt summary endpoint  
   (`/api/orders/{id}/receipt/summary/`)
