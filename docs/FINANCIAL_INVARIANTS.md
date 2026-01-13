@@ -92,6 +92,10 @@ Queue clarity (ready-unpaid):
 - /api/orders/queue/?status=READY&ready_unpaid=1 uses settled-only balances.
 - Response includes header X-Ready-Unpaid-Mode: settled_only (and ready_unpaid_mode in paginated responses).
 
+Timeline determinism:
+- Timeline ordering is stable for same-timestamp events using kind priority + id tie-breaker.
+- Timeline responses include event_type and created_at aliases for schema stability.
+
 ---
 
 ## Settlement (Financial Lock)

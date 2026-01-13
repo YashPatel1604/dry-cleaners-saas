@@ -163,6 +163,17 @@ This suite locks operator‑critical response shapes and financial invariants.
 
 ---
 
+## ✅ What’s in v0.6.0
+
+- Operator safety regression suite (`pytest -m operator_safety`)
+- Deterministic receipt JSON + PDF parity
+- Receipt summary endpoint for fast operator reads
+- Timeline and audit shape stability with deterministic ordering
+- Ready-unpaid queue clarity (settled-only mode)
+- Idempotent replay headers for operator workflows
+
+---
+
 ## 📄 License
 
 No license selected yet (SaaS-oriented).
