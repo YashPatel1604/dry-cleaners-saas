@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from rest_framework.test import APIClient
 
-from tenants.models import Tenant
+from tenants.models import Tenant, TenantMembership
 from customers.models import Customer
 from orders.models import Order, OrderItem
 from inventory.models import InventoryItem
@@ -49,6 +49,12 @@ class TestReceiptSettlementStability(TestCase):
 
         self.tenant = Tenant.objects.create(name="T1", slug="t1")
         self.user = User.objects.create_user(username="admin", password="pass")
+        TenantMembership.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            role=TenantMembership.Role.OWNER_ADMIN,
+            is_active=True,
+        )
 
         self.client.force_authenticate(user=self.user)
         self.client.credentials(HTTP_X_TENANT=self.tenant.slug)

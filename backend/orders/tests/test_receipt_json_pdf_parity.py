@@ -6,7 +6,7 @@ from customers.models import Customer
 from inventory.models import InventoryItem
 from orders.models import Order, OrderItem
 from payments.models import Payment
-from tenants.models import Tenant
+from tenants.models import Tenant, TenantMembership
 
 pytestmark = pytest.mark.operator_safety
 
@@ -39,6 +39,12 @@ def create_inventory_item(*, tenant, name: str, price_cents: int) -> InventoryIt
 def test_receipt_json_matches_print_presenter(django_user_model, monkeypatch):
     tenant = Tenant.objects.create(slug="t-parity", name="T Parity")
     user = django_user_model.objects.create_user(username="u1", password="pw")
+    TenantMembership.objects.create(
+        tenant=tenant,
+        user=user,
+        role=TenantMembership.Role.OWNER_ADMIN,
+        is_active=True,
+    )
 
     customer = Customer.objects.create(
         tenant=tenant,

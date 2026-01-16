@@ -19,11 +19,20 @@ def recalc_order_totals(order: Order, tax_rate: float = 0.08) -> None:
     from payments.models import Payment
 
     with transaction.atomic():
-        order = Order.objects.select_for_update().get(pk=order.pk)
+        order = (
+            Order.objects.select_for_update()
+            .select_related("tenant")
+            .get(pk=order.pk)
+        )
 
         items = order.items.all()
         subtotal = sum(i.line_total_cents for i in items)
-        tax = int(round(subtotal * tax_rate))
+        if getattr(order.tenant, "collects_tax", True) is False:
+            tax = 0
+        else:
+            tenant_bps = getattr(order.tenant, "tax_rate_bps", None)
+            rate = tax_rate if tenant_bps is None else (tenant_bps / 10000)
+            tax = int(round(subtotal * rate))
         total = subtotal + tax
 
         order.subtotal_cents = subtotal

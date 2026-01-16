@@ -1,4 +1,4 @@
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
@@ -7,11 +7,12 @@ from django.db.models import Q
 from .models import Customer, normalize_phone_us
 from .serializers import CustomerSerializer
 from orders.models import Order
+from tenants.permissions import IsTenantMember
 
 
 class CustomerViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsTenantMember]
 
     def get_queryset(self):
         return Customer.objects.filter(tenant=self.request.tenant)

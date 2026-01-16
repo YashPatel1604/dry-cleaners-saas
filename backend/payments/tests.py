@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from rest_framework.test import APITestCase, APIClient
 
-from tenants.models import Tenant, TenantMember
+from tenants.models import Tenant, TenantMembership
 from customers.models import Customer
 
 # ✅ CHANGE THIS if your inventory model class is named differently
@@ -88,8 +88,12 @@ class PaymentsAndAdjustmentsFlowTests(APITestCase):
 
         self.t1 = Tenant.objects.create(name="T1", slug="t1")
         self.t2 = Tenant.objects.create(name="T2", slug="t2")
-        TenantMember.objects.create(
-            tenant=self.t1, user=self.user, role=TenantMember.Role.OWNER)
+        TenantMembership.objects.create(
+            tenant=self.t1,
+            user=self.user,
+            role=TenantMembership.Role.OWNER_ADMIN,
+            is_active=True,
+        )
 
         self._set_tenant_headers(self.t1)
         self.order = self._create_order_with_item(

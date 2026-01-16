@@ -7,7 +7,7 @@ from django.db.models import Sum, Count, Case, When, IntegerField
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -16,6 +16,7 @@ from orders.services import recalc_order_totals
 from .models import Payment, Adjustment
 from .serializers import PaymentSerializer, AdjustmentSerializer
 from audit.utils import emit_event, actor_from_request
+from tenants.permissions import IsTenantMember
 
 
 # =========================
@@ -24,7 +25,7 @@ from audit.utils import emit_event, actor_from_request
 
 class PaymentViewSet(viewsets.ModelViewSet):
     serializer_class = PaymentSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsTenantMember]
 
     def get_queryset(self):
         return Payment.objects.filter(tenant=self.request.tenant).select_related("order")
@@ -692,7 +693,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
 
 class AdjustmentViewSet(viewsets.ModelViewSet):
     serializer_class = AdjustmentSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsTenantMember]
 
     def get_queryset(self):
         return Adjustment.objects.filter(tenant=self.request.tenant).select_related("order")

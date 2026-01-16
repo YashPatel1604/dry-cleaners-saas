@@ -5,7 +5,7 @@ from datetime import timedelta, date
 from django.db.models import Count, Sum, Q
 from django.db.models.functions import TruncDate
 from django.utils import timezone
-from rest_framework.permissions import IsAuthenticated
+from tenants.permissions import IsTenantMember
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -30,7 +30,7 @@ def parse_range_days(raw: str | None) -> int:
 
 
 class DashboardSummaryView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantMember]
     OVERDUE_DAYS = 3
 
     def get(self, request):
@@ -87,7 +87,7 @@ class DashboardRevenueView(APIView):
     GET /api/dashboard/revenue/?range=7d|30d
     Returns daily buckets with zero-filled missing dates.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantMember]
 
     def get(self, request):
         tenant = request.tenant
@@ -167,7 +167,7 @@ class DashboardRevenueView(APIView):
 
 
 class DashboardOrdersByStatusView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantMember]
 
     def get(self, request):
         tenant = request.tenant

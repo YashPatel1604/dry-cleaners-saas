@@ -4,7 +4,7 @@ pytestmark = pytest.mark.operator_safety
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from tenants.models import Tenant
+from tenants.models import Tenant, TenantMembership
 from customers.models import Customer
 from inventory.models import InventoryItem
 from orders.models import Order, OrderItem
@@ -58,6 +58,12 @@ def build_order_with_item(*, tenant, customer, price_cents: int) -> Order:
 def test_receipt_change_due_when_overpaid_without_out(django_user_model):
     tenant = Tenant.objects.create(slug="t-change-1", name="T Change 1")
     user = django_user_model.objects.create_user(username="u-change-1", password="pw")
+    TenantMembership.objects.create(
+        tenant=tenant,
+        user=user,
+        role=TenantMembership.Role.OWNER_ADMIN,
+        is_active=True,
+    )
 
     customer = Customer.objects.create(
         tenant=tenant,
@@ -95,6 +101,12 @@ def test_receipt_change_due_when_overpaid_without_out(django_user_model):
 def test_receipt_change_due_zero_when_out_payment_exists(django_user_model):
     tenant = Tenant.objects.create(slug="t-change-2", name="T Change 2")
     user = django_user_model.objects.create_user(username="u-change-2", password="pw")
+    TenantMembership.objects.create(
+        tenant=tenant,
+        user=user,
+        role=TenantMembership.Role.OWNER_ADMIN,
+        is_active=True,
+    )
 
     customer = Customer.objects.create(
         tenant=tenant,

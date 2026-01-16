@@ -10,7 +10,7 @@ from django.db import IntegrityError
 from django.db.models import Q, Count, Sum
 from zoneinfo import ZoneInfo
 
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -28,6 +28,7 @@ from .serializers import (
     OrderReceiptSerializer,
     OrderStatusEventSerializer,
 )
+from tenants.permissions import IsTenantMember
 
 
 def default_due_at_for_tenant(tenant, now=None):
@@ -73,7 +74,7 @@ def compute_net_paid_and_balance(order):
 
 class OrderViewSet(viewsets.ModelViewSet):
     serializer_class = OrderSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsTenantMember]
 
     def get_queryset(self):
         # keep list/retrieve fast
@@ -1337,7 +1338,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
 class OrderItemViewSet(viewsets.ModelViewSet):
     serializer_class = OrderItemSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsTenantMember]
 
     def get_queryset(self):
         return OrderItem.objects.filter(order__tenant=self.request.tenant)

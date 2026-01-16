@@ -1,13 +1,14 @@
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets
 from .models import InventoryItem
 from .serializers import InventoryItemSerializer
 from django.db import IntegrityError
 from rest_framework.exceptions import ValidationError
+from tenants.permissions import IsTenantMember
 
 
 class InventoryItemViewSet(viewsets.ModelViewSet):
     serializer_class = InventoryItemSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsTenantMember]
 
     def get_queryset(self):
         return InventoryItem.objects.filter(tenant=self.request.tenant)
