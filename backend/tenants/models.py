@@ -2,6 +2,8 @@ from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
 from django.core.exceptions import ValidationError
+from django.utils import timezone
+import hashlib
 
 
 class Tenant(models.Model):
@@ -136,3 +138,145 @@ class TenantConfigEvent(models.Model):
 
     def __str__(self):
         return f"{self.tenant_id} {self.key}"
+
+
+class TenantMembershipEvent(models.Model):
+    class Action(models.TextChoices):
+        CREATED = "CREATED", "Created"
+        ROLE_CHANGED = "ROLE_CHANGED", "Role changed"
+        DEACTIVATED = "DEACTIVATED", "Deactivated"
+        REACTIVATED = "REACTIVATED", "Reactivated"
+
+    tenant = models.ForeignKey(
+        Tenant, on_delete=models.CASCADE, related_name="membership_events"
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tenant_membership_events",
+    )
+    subject_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="tenant_membership_subject_events",
+    )
+    action = models.CharField(max_length=20, choices=Action.choices)
+    old_role = models.CharField(max_length=20, null=True, blank=True)
+    new_role = models.CharField(max_length=20, null=True, blank=True)
+    is_active_before = models.BooleanField(null=True, blank=True)
+    is_active_after = models.BooleanField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["tenant", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.tenant_id} {self.action}"
+
+
+class TenantInvite(models.Model):
+    class Role(models.TextChoices):
+        OWNER_ADMIN = "OWNER_ADMIN", "Owner admin"
+        OPERATOR = "OPERATOR", "Operator"
+
+    tenant = models.ForeignKey(
+        Tenant, on_delete=models.CASCADE, related_name="invites"
+    )
+    email = models.EmailField()
+    role = models.CharField(
+        max_length=20, choices=Role.choices, default=Role.OPERATOR
+    )
+    token_hash = models.CharField(max_length=64)
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tenant_invites_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["tenant", "created_at"]),
+            models.Index(fields=["tenant", "email"]),
+            models.Index(fields=["tenant", "token_hash"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "email"],
+                condition=models.Q(accepted_at__isnull=True, revoked_at__isnull=True),
+                name="uniq_active_invite_email_per_tenant",
+            )
+        ]
+
+    @property
+    def is_active(self) -> bool:
+        if self.accepted_at or self.revoked_at:
+            return False
+        return self.expires_at > timezone.now()
+
+    def mark_accepted(self):
+        self.accepted_at = timezone.now()
+        self.save(update_fields=["accepted_at"])
+
+    def mark_revoked(self):
+        self.revoked_at = timezone.now()
+        self.save(update_fields=["revoked_at"])
+
+    def save(self, *args, **kwargs):
+        if self.email:
+            self.email = self.email.strip().lower()
+        super().save(*args, **kwargs)
+
+    @staticmethod
+    def hash_token(raw_token: str) -> str:
+        return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+    def __str__(self):
+        return f"{self.tenant_id} {self.email} {self.role}"
+
+
+class TenantInviteEvent(models.Model):
+    class EventType(models.TextChoices):
+        CREATED = "CREATED", "Created"
+        RESENT = "RESENT", "Resent"
+        REVOKED = "REVOKED", "Revoked"
+        ACCEPTED = "ACCEPTED", "Accepted"
+
+    tenant = models.ForeignKey(
+        Tenant, on_delete=models.CASCADE, related_name="invite_events"
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tenant_invite_events",
+    )
+    email = models.EmailField()
+    event_type = models.CharField(max_length=20, choices=EventType.choices)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["tenant", "created_at"]),
+            models.Index(fields=["tenant", "email"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.email:
+            self.email = self.email.strip().lower()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.tenant_id} {self.event_type} {self.email}"

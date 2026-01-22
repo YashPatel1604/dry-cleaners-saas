@@ -40,6 +40,8 @@ class TenantMiddleware(MiddlewareMixin):
 
         OPEN_EXACT_PATHS = (
             "/api/tenants/",   # allow POST create (and maybe list if you want)
+            "/api/tenant/bootstrap/",
+            "/api/invites/accept/",
         )
 
         if request.path.startswith(OPEN_PATH_PREFIXES) or request.path in OPEN_EXACT_PATHS:
