@@ -1,30 +1,52 @@
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import React from "react";
+import { Navigate, Route, Routes } from "react-router-dom";
 
-export default function App() {
+import RequireAuth from "./routes/RequireAuth";
+import RequireTenant from "./routes/RequireTenant";
+import AppShell from "./components/layout/AppShell";
+import Login from "./pages/Login";
+import SelectTenant from "./pages/SelectTenant";
+import Orders from "./pages/Orders";
+import OrderDetail from "./pages/OrderDetail";
+import Dashboard from "./pages/Dashboard";
+import Customers from "./pages/Customers";
+import CustomerDetail from "./pages/CustomerDetail";
+import Inventory from "./pages/Inventory";
+import Payments from "./pages/Payments";
+import Reports from "./pages/Reports";
+import Queue from "./pages/Queue";
+import Invites from "./pages/Invites";
+import Team from "./pages/Team";
+import Audit from "./pages/Audit";
+import Settings from "./pages/Settings";
+
+export default function App(): JSX.Element {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
-      <Card className="w-full max-w-md">
-        <CardContent className="p-6 space-y-5">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Dry Cleaners SaaS
-            </h1>
-            <p className="text-sm text-slate-600 mt-1">
-              Milestone M1: Django API + React UI scaffold
-            </p>
-          </div>
+    <Routes>
+      <Route path="/login" element={<Login />} />
 
-          <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
-            <Input id="email" placeholder="owner@location.com" />
-          </div>
+      <Route element={<RequireAuth />}>
+        <Route path="/select-tenant" element={<SelectTenant />} />
 
-          <Button className="w-full">Continue</Button>
-        </CardContent>
-      </Card>
-    </div>
+        <Route element={<RequireTenant />}>
+          <Route element={<AppShell />}>
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/orders" element={<Orders />} />
+            <Route path="/orders/:id" element={<OrderDetail />} />
+            <Route path="/customers" element={<Customers />} />
+            <Route path="/customers/:id" element={<CustomerDetail />} />
+            <Route path="/inventory" element={<Inventory />} />
+            <Route path="/payments" element={<Payments />} />
+            <Route path="/reports" element={<Reports />} />
+            <Route path="/queue" element={<Queue />} />
+            <Route path="/invites" element={<Invites />} />
+            <Route path="/team" element={<Team />} />
+            <Route path="/audit" element={<Audit />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          </Route>
+        </Route>
+      </Route>
+    </Routes>
   );
 }

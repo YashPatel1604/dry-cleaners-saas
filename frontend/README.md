@@ -2,6 +2,18 @@
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
+## Debugging request headers (frontend)
+
+You can inspect the auth/tenant headers the app would send without making a request:
+
+```ts
+import { debugAuthHeaders } from "./src/lib/api";
+
+console.log(debugAuthHeaders());
+```
+
+This uses the current values from `localStorage` (`access_token`, `tenant_slug`).
+
 Currently, two official plugins are available:
 
 - [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh

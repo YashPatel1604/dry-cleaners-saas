@@ -163,6 +163,34 @@ This suite locks operator‑critical response shapes and financial invariants.
 
 ---
 
+## 🔎 Debugging request headers (backend)
+
+To verify headers for a request, hit the debug endpoint from your browser or curl:
+
+```
+GET /debug/headers/
+```
+
+It returns the resolved `X-Tenant` and all `HTTP_*` headers so you can confirm what’s being sent.
+
+---
+
+## 🔐 Auth Token Storage (Current Plan)
+
+For local dev and fast iteration, we’re using:
+
+- Access token in `localStorage`
+
+Planned hardening (post‑MVP):
+
+- HttpOnly refresh token cookie + CSRF protections
+- Short‑lived access tokens
+- CSP and tighter XSS mitigations
+
+Rationale: faster dev flow now, with a clear upgrade path once auth flows stabilize.
+
+---
+
 ## ✅ What’s in v0.6.0
 
 - Operator safety regression suite (`pytest -m operator_safety`)
