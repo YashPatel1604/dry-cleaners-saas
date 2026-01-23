@@ -154,4 +154,7 @@ def test_receipt_print_uses_presenter_payload(django_user_model, monkeypatch):
         fields=["subtotal_cents", "tax_cents", "total_cents", "paid_cents", "settled_at"])
 
     expected = ReceiptPresenter(order).build()
+    expected["pdf_url"] = resp.wsgi_request.build_absolute_uri(
+        f"/api/orders/{order.id}/receipt/print/"
+    )
     assert captured["receipt"] == expected

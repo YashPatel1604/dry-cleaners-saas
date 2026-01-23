@@ -42,6 +42,7 @@ class TenantMiddleware(MiddlewareMixin):
             "/api/tenants/",   # allow POST create (and maybe list if you want)
             "/api/tenant/bootstrap/",
             "/api/invites/accept/",
+            "/api/me/tenants/",
         )
 
         if request.path.startswith(OPEN_PATH_PREFIXES) or request.path in OPEN_EXACT_PATHS:
@@ -53,9 +54,12 @@ class TenantMiddleware(MiddlewareMixin):
             return JsonResponse({"detail": "Missing X-Tenant header."}, status=400)
 
         try:
-            tenant = Tenant.objects.get(slug=slug, is_active=True)
+            tenant = Tenant.objects.get(slug=slug)
         except Tenant.DoesNotExist:
             return JsonResponse({"detail": "Invalid X-Tenant."}, status=400)
+
+        if not tenant.is_active:
+            return JsonResponse({"detail": "Not found."}, status=404)
 
         request.tenant = tenant
         return None

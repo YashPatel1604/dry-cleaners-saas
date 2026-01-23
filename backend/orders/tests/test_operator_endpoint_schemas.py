@@ -113,6 +113,7 @@ def test_receipt_endpoint_schema(django_user_model):
         "created_at",
         "settled_at",
         "customer",
+        "pdf_url",
         "items",
         "subtotal_cents",
         "tax_cents",
@@ -240,6 +241,9 @@ def test_pickup_payment_endpoint_schema(django_user_model):
     order_keys = {
         "id",
         "customer",
+        "customer_name",
+        "customer_phone",
+        "customer_email",
         "status",
         "due_at",
         "notes",

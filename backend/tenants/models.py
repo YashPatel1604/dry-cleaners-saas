@@ -13,6 +13,7 @@ class Tenant(models.Model):
     slug = models.SlugField(unique=True, blank=True)
 
     is_active = models.BooleanField(default=True)
+    deactivated_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     default_turnaround_days = models.PositiveSmallIntegerField(default=2)
     default_ready_hour = models.PositiveSmallIntegerField(default=17)   # 0-23
@@ -243,6 +244,49 @@ class TenantInvite(models.Model):
 
     def __str__(self):
         return f"{self.tenant_id} {self.email} {self.role}"
+
+
+class PasswordResetToken(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="password_reset_tokens",
+    )
+    token_hash = models.CharField(max_length=64)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "expires_at"]),
+        ]
+
+    @property
+    def is_active(self) -> bool:
+        return self.used_at is None and self.expires_at > timezone.now()
+
+    @classmethod
+    def create_for_user(cls, *, user, token_hash: str, expires_at):
+        now = timezone.now()
+        cls.objects.filter(
+            user=user,
+            used_at__isnull=True,
+            expires_at__gt=now,
+        ).update(used_at=now)
+        return cls.objects.create(
+            user=user,
+            token_hash=token_hash,
+            expires_at=expires_at,
+        )
+
+    def mark_used(self):
+        if self.used_at is None:
+            self.used_at = timezone.now()
+            self.save(update_fields=["used_at"])
+
+    def __str__(self):
+        return f"{self.user_id} {self.expires_at}"
 
 
 class TenantInviteEvent(models.Model):

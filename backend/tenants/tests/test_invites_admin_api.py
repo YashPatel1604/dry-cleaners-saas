@@ -1,4 +1,5 @@
 import pytest
+from django.test import override_settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -22,6 +23,7 @@ def build_client(*, tenant, user, role, is_active=True) -> APIClient:
 
 
 @pytest.mark.django_db
+@override_settings(RETURN_INVITE_TOKEN=True)
 def test_invites_admin_api():
     User = get_user_model()
     tenant = Tenant.objects.create(slug="t-invite", name="T Invite")

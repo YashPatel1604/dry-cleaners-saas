@@ -6,7 +6,7 @@ from rest_framework.test import APIClient
 
 from tenants.models import Tenant, TenantMembership
 from customers.models import Customer
-from orders.models import Order, OrderStatusEvent
+from orders.models import Order, OrderStatusEvent, OrderNote
 from payments.models import Payment, Adjustment
 
 User = get_user_model()
@@ -95,6 +95,19 @@ class TestOrderTimeline(TestCase):
         self.assertIn("payment.created", kinds)
         self.assertIn("adjustment.applied", kinds)
         self.assertIn("settlement.snapshot", kinds)
+
+    def test_timeline_includes_notes(self):
+        OrderNote.objects.create(
+            tenant=self.tenant,
+            order=self.order,
+            author=self.user,
+            note="Handle with care",
+        )
+
+        r = self.client.get(f"/api/orders/{self.order.id}/timeline/")
+        self.assertEqual(r.status_code, 200)
+        kinds = [e["kind"] for e in r.json()]
+        self.assertIn("note.added", kinds)
 
     def test_timeline_sorted(self):
         OrderStatusEvent.objects.create(

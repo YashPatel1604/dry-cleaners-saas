@@ -2,7 +2,10 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.exceptions import ValidationError, PermissionDenied, NotFound
+from django.conf import settings
 from django.db import transaction
+from django.db.models import Case, Count, IntegerField, Sum, When
+from django.db.models.functions import TruncDate
 from django.utils import timezone
 import re
 from django.contrib.auth import get_user_model
@@ -21,6 +24,13 @@ from .serializers import (
     TenantMembershipSerializer,
     TenantMembershipCreateSerializer,
     TenantMembershipUpdateSerializer,
+    MeTenantSerializer,
+    TenantMembershipEventSerializer,
+    TenantConfigEventSerializer,
+    TenantInviteEventSerializer,
+    TenantReportsSummarySerializer,
+    TenantReportsRangeSerializer,
+    TenantReportsUnpaidSerializer,
     TenantInviteCreateSerializer,
     TenantInviteSerializer,
     InviteAcceptSerializer,
@@ -31,10 +41,15 @@ from .utils import (
     active_owner_admin_count,
     generate_invite_token,
     hash_invite_token,
+    parse_limit_offset,
 )
-from datetime import timedelta
+from .email import send_tenant_invite_email
+from datetime import datetime, timedelta
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
+from orders.models import Order
+from orders.services import receipt_financials_for_order
+from payments.models import Payment
 
 
 class TenantCreateView(generics.CreateAPIView):
@@ -189,6 +204,402 @@ class MeView(APIView):
                 "tenants": tenant_list,
             }
         )
+
+
+class MeTenantsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        memberships = (
+            TenantMembership.objects.filter(
+                user=request.user,
+                is_active=True,
+                tenant__is_active=True,
+            )
+            .select_related("tenant")
+            .order_by("tenant__name", "tenant__id")
+        )
+        data = [
+            {
+                "tenant_id": membership.tenant.id,
+                "tenant_slug": membership.tenant.slug,
+                "tenant_name": membership.tenant.name,
+                "role": membership.role,
+            }
+            for membership in memberships
+        ]
+        return Response(MeTenantSerializer(data, many=True).data)
+
+
+def _require_owner_admin(*, request):
+    membership = get_active_membership(
+        user=request.user, tenant=request.tenant, request=request
+    )
+    if membership is None:
+        raise NotFound()
+    if membership.role != TenantMembership.Role.OWNER_ADMIN:
+        raise PermissionDenied()
+    return membership
+
+
+def _apply_limit_before_id(request, queryset):
+    limit_value, offset_value = parse_limit_offset(
+        request, default_limit=50, max_limit=200
+    )
+    before_id = request.query_params.get("before_id")
+    if before_id:
+        try:
+            before_value = int(before_id)
+        except ValueError as exc:
+            raise ValidationError({"before_id": "Must be an integer."}) from exc
+        queryset = queryset.filter(id__lt=before_value)
+        offset_value = 0
+
+    return queryset[offset_value: offset_value + limit_value]
+
+
+class TenantMembershipAuditView(APIView):
+    permission_classes = [IsTenantMember]
+
+    def get(self, request):
+        _require_owner_admin(request=request)
+        events = (
+            TenantMembershipEvent.objects.filter(tenant=request.tenant)
+            .select_related("actor", "subject_user")
+            .order_by("-id")
+        )
+        events = _apply_limit_before_id(request, events)
+        return Response(TenantMembershipEventSerializer(events, many=True).data)
+
+
+class TenantConfigAuditView(APIView):
+    permission_classes = [IsTenantMember]
+
+    def get(self, request):
+        _require_owner_admin(request=request)
+        events = (
+            TenantConfigEvent.objects.filter(tenant=request.tenant)
+            .select_related("actor")
+            .order_by("-id")
+        )
+        events = _apply_limit_before_id(request, events)
+        return Response(TenantConfigEventSerializer(events, many=True).data)
+
+
+class TenantInviteAuditView(APIView):
+    permission_classes = [IsTenantMember]
+
+    def get(self, request):
+        _require_owner_admin(request=request)
+        events = (
+            TenantInviteEvent.objects.filter(tenant=request.tenant)
+            .select_related("actor")
+            .order_by("-id")
+        )
+        events = _apply_limit_before_id(request, events)
+        return Response(TenantInviteEventSerializer(events, many=True).data)
+
+
+class TenantReportsSummaryView(APIView):
+    permission_classes = [IsTenantMember]
+
+    def get(self, request):
+        _require_owner_admin(request=request)
+        date_str = request.query_params.get("date")
+        if date_str:
+            try:
+                day = datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError as exc:
+                raise ValidationError(
+                    {"date": "Invalid format. Use YYYY-MM-DD."}
+                ) from exc
+        else:
+            day = timezone.localdate()
+
+        tz = timezone.get_current_timezone()
+        start = timezone.make_aware(datetime.combine(day, datetime.min.time()), tz)
+        end = start + timedelta(days=1)
+
+        orders_day = (
+            Order.objects.filter(
+                tenant=request.tenant,
+                created_at__gte=start,
+                created_at__lt=end,
+            )
+            .prefetch_related("payments", "adjustments")
+            .order_by("id")
+        )
+
+        created_count = orders_day.count()
+        settled_count = Order.objects.filter(
+            tenant=request.tenant,
+            settled_at__gte=start,
+            settled_at__lt=end,
+        ).count()
+        open_count = orders_day.filter(
+            settled_at__isnull=True
+        ).exclude(status="CANCELLED").count()
+
+        totals = orders_day.aggregate(
+            gross_sales_cents=Sum("total_cents"),
+            tax_cents=Sum("tax_cents"),
+        )
+        gross_sales_cents = int(totals.get("gross_sales_cents") or 0)
+        tax_cents = int(totals.get("tax_cents") or 0)
+        discounts_cents = 0
+        net_sales_cents = gross_sales_cents - discounts_cents
+
+        net_paid_cents = 0
+        balance_due_cents = 0
+        change_due_cents = 0
+        unpaid_count = 0
+
+        for order in orders_day:
+            if order.settled_at:
+                net_paid = int(order.settled_paid_cents or 0)
+                balance_due = int(order.settled_balance_due_cents or 0)
+                change_due = int(order.settled_change_cents or 0)
+            else:
+                financials = receipt_financials_for_order(order)
+                net_paid = int(financials.get("net_paid_cents") or 0)
+                balance_due = int(financials.get("balance_due_cents") or 0)
+                change_due = int(financials.get("change_due_cents") or 0)
+
+            net_paid_cents += net_paid
+            balance_due_cents += balance_due
+            change_due_cents += change_due
+            if balance_due > 0:
+                unpaid_count += 1
+
+        payment_rows = (
+            Payment.objects.filter(
+                tenant=request.tenant,
+                status=Payment.Status.CAPTURED,
+                created_at__gte=start,
+                created_at__lt=end,
+            )
+            .values("method")
+            .annotate(
+                in_cents=Sum(
+                    Case(
+                        When(direction=Payment.Direction.IN, then="amount_cents"),
+                        default=0,
+                        output_field=IntegerField(),
+                    )
+                ),
+                out_cents=Sum(
+                    Case(
+                        When(direction=Payment.Direction.OUT, then="amount_cents"),
+                        default=0,
+                        output_field=IntegerField(),
+                    )
+                ),
+            )
+        )
+
+        method_totals = {"CASH": 0, "CARD": 0, "OTHER": 0}
+        for row in payment_rows:
+            method = row["method"]
+            net = int(row.get("in_cents") or 0) - int(row.get("out_cents") or 0)
+            if method in ("CASH", "CARD"):
+                method_totals[method] += net
+            else:
+                method_totals["OTHER"] += net
+
+        payload = {
+            "date": day.isoformat(),
+            "orders": {
+                "created_count": created_count,
+                "settled_count": settled_count,
+                "open_count": open_count,
+                "unpaid_count": unpaid_count,
+            },
+            "money": {
+                "gross_sales_cents": gross_sales_cents,
+                "discounts_cents": discounts_cents,
+                "tax_cents": tax_cents,
+                "net_sales_cents": net_sales_cents,
+                "net_paid_cents": net_paid_cents,
+                "balance_due_cents": balance_due_cents,
+                "change_due_cents": change_due_cents,
+            },
+            "payments": {
+                "by_method": [
+                    {"method": "CASH", "amount_cents": method_totals["CASH"]},
+                    {"method": "CARD", "amount_cents": method_totals["CARD"]},
+                    {"method": "OTHER", "amount_cents": method_totals["OTHER"]},
+                ]
+            },
+        }
+        return Response(TenantReportsSummarySerializer(payload).data)
+
+
+class TenantReportsRangeView(APIView):
+    permission_classes = [IsTenantMember]
+    MAX_DAYS = 92
+
+    def get(self, request):
+        _require_owner_admin(request=request)
+        start_str = request.query_params.get("start")
+        end_str = request.query_params.get("end")
+        if not start_str or not end_str:
+            raise ValidationError({"range": "Both start and end are required (YYYY-MM-DD)."})
+
+        try:
+            start_day = datetime.strptime(start_str, "%Y-%m-%d").date()
+            end_day = datetime.strptime(end_str, "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise ValidationError({"date": "Invalid format. Use YYYY-MM-DD."}) from exc
+
+        if end_day < start_day:
+            raise ValidationError({"end": "Must be on/after start."})
+
+        days = (end_day - start_day).days + 1
+        if days > self.MAX_DAYS:
+            raise ValidationError({"range": f"Range cannot exceed {self.MAX_DAYS} days."})
+
+        tz = timezone.get_current_timezone()
+        start = timezone.make_aware(datetime.combine(start_day, datetime.min.time()), tz)
+        end = timezone.make_aware(datetime.combine(end_day, datetime.min.time()), tz) + timedelta(days=1)
+
+        created_rows = (
+            Order.objects.filter(
+                tenant=request.tenant,
+                created_at__gte=start,
+                created_at__lt=end,
+            )
+            .annotate(day=TruncDate("created_at"))
+            .values("day")
+            .annotate(created_count=Count("id"))
+            .order_by("day")
+        )
+
+        settled_rows = (
+            Order.objects.filter(
+                tenant=request.tenant,
+                settled_at__gte=start,
+                settled_at__lt=end,
+            )
+            .annotate(day=TruncDate("settled_at"))
+            .values("day")
+            .annotate(
+                settled_count=Count("id"),
+                net_sales_cents=Sum("settled_total_cents"),
+                net_paid_cents=Sum("settled_paid_cents"),
+                balance_due_cents=Sum("settled_balance_due_cents"),
+            )
+            .order_by("day")
+        )
+
+        created_by_day = {row["day"]: row for row in created_rows}
+        settled_by_day = {row["day"]: row for row in settled_rows}
+
+        series = []
+        for offset in range(days):
+            day = start_day + timedelta(days=offset)
+            created = created_by_day.get(day, {})
+            settled = settled_by_day.get(day, {})
+            series.append(
+                {
+                    "date": day.isoformat(),
+                    "orders_created": int(created.get("created_count") or 0),
+                    "orders_settled": int(settled.get("settled_count") or 0),
+                    "net_sales_cents": int(settled.get("net_sales_cents") or 0),
+                    "net_paid_cents": int(settled.get("net_paid_cents") or 0),
+                    "balance_due_cents": int(settled.get("balance_due_cents") or 0),
+                }
+            )
+
+        payload = {
+            "start": start_day.isoformat(),
+            "end": end_day.isoformat(),
+            "series": series,
+        }
+        limit, offset = parse_limit_offset(request, default_limit=None, max_limit=200)
+        if limit is not None:
+            payload["series"] = series[offset: offset + limit]
+        return Response(TenantReportsRangeSerializer(payload).data)
+
+
+class TenantReportsUnpaidView(APIView):
+    permission_classes = [IsTenantMember]
+    MAX_LIMIT = 200
+
+    def get(self, request):
+        _require_owner_admin(request=request)
+        limit_raw = request.query_params.get("limit", "50")
+        offset_raw = request.query_params.get("offset", "0")
+
+        try:
+            limit = int(limit_raw)
+            offset = int(offset_raw)
+        except ValueError as exc:
+            raise ValidationError({"pagination": "limit and offset must be integers."}) from exc
+
+        if limit < 1 or offset < 0:
+            raise ValidationError({"pagination": "limit must be >= 1 and offset >= 0."})
+        limit = min(limit, self.MAX_LIMIT)
+
+        candidates = (
+            Order.objects.filter(tenant=request.tenant)
+            .exclude(status="CANCELLED")
+            .select_related("customer")
+            .prefetch_related("payments", "adjustments")
+        )
+
+        unpaid = []
+        for order in candidates:
+            financials = receipt_financials_for_order(order)
+            balance_due = int(financials.get("balance_due_cents") or 0)
+            if balance_due <= 0:
+                continue
+            created_at = order.created_at
+            unpaid.append(
+                {
+                    "order_id": order.id,
+                    "pickup_id": None,
+                    "customer_name": getattr(order.customer, "name", None),
+                    "status": order.status,
+                    "total_cents": int(order.total_cents or 0),
+                    "net_paid_cents": int(financials.get("net_paid_cents") or 0),
+                    "balance_due_cents": balance_due,
+                    "created_at": created_at.isoformat(),
+                    "_created_at": created_at,
+                }
+            )
+
+        unpaid.sort(key=lambda row: (-row["balance_due_cents"], row["_created_at"]))
+        count = len(unpaid)
+        results = unpaid[offset: offset + limit]
+        for row in results:
+            row.pop("_created_at", None)
+
+        payload = {"count": count, "results": results}
+        return Response(TenantReportsUnpaidSerializer(payload).data)
+
+
+class TenantDeactivateView(APIView):
+    permission_classes = [IsTenantMember]
+
+    def post(self, request):
+        _require_owner_admin(request=request)
+        tenant = request.tenant
+
+        with transaction.atomic():
+            tenant.refresh_from_db()
+            if tenant.is_active:
+                tenant.is_active = False
+                tenant.deactivated_at = timezone.now()
+                tenant.save(update_fields=["is_active", "deactivated_at"])
+                TenantConfigEvent.objects.create(
+                    tenant=tenant,
+                    actor=request.user,
+                    key="tenant_status",
+                    old_value="active",
+                    new_value="deactivated",
+                )
+
+        return Response({"status": "deactivated"}, status=200)
 
 
 class TenantBootstrapView(APIView):
@@ -539,6 +950,9 @@ class TenantInvitesView(APIView):
             TenantInvite.objects.filter(tenant=request.tenant)
             .order_by("-created_at")
         )
+        limit, offset = parse_limit_offset(request, default_limit=None, max_limit=200)
+        if limit is not None:
+            invites = invites[offset: offset + limit]
         return Response(TenantInviteSerializer(invites, many=True).data)
 
     def post(self, request):
@@ -552,6 +966,7 @@ class TenantInvitesView(APIView):
         token_hash = hash_invite_token(token)
         expires_at = now + timedelta(days=7)
 
+        event_type = TenantInviteEvent.EventType.CREATED
         with transaction.atomic():
             invite = (
                 TenantInvite.objects.filter(
@@ -567,46 +982,46 @@ class TenantInvitesView(APIView):
                 invite.token_hash = token_hash
                 invite.expires_at = expires_at
                 invite.save(update_fields=["token_hash", "expires_at"])
-                TenantInviteEvent.objects.create(
+                event_type = TenantInviteEvent.EventType.RESENT
+            else:
+                invite = TenantInvite.objects.create(
                     tenant=request.tenant,
-                    actor=request.user,
                     email=email,
-                    event_type=TenantInviteEvent.EventType.RESENT,
-                )
-                return Response(
-                    {
-                        "id": invite.id,
-                        "email": invite.email,
-                        "expires_at": invite.expires_at,
-                        "token": token,
-                    },
-                    status=201,
+                    role=TenantInvite.Role.OPERATOR,
+                    token_hash=token_hash,
+                    expires_at=expires_at,
+                    created_by=request.user,
                 )
 
-            invite = TenantInvite.objects.create(
+        email_sent = False
+        try:
+            # Prefer keeping the invite even if email sending fails.
+            send_tenant_invite_email(
                 tenant=request.tenant,
-                email=email,
-                role=TenantInvite.Role.OPERATOR,
-                token_hash=token_hash,
-                expires_at=expires_at,
-                created_by=request.user,
+                email=invite.email,
+                token=token,
+                invited_by_user=request.user,
             )
-            TenantInviteEvent.objects.create(
-                tenant=request.tenant,
-                actor=request.user,
-                email=email,
-                event_type=TenantInviteEvent.EventType.CREATED,
-            )
+            email_sent = True
+        except Exception:
+            email_sent = False
 
-        return Response(
-            {
-                "id": invite.id,
-                "email": invite.email,
-                "expires_at": invite.expires_at,
-                "token": token,
-            },
-            status=201,
+        TenantInviteEvent.objects.create(
+            tenant=request.tenant,
+            actor=request.user,
+            email=email,
+            event_type=event_type,
+            metadata={"email_sent": email_sent},
         )
+
+        data = {
+            "id": invite.id,
+            "email": invite.email,
+            "expires_at": invite.expires_at,
+        }
+        if getattr(settings, "RETURN_INVITE_TOKEN", settings.DEBUG):
+            data["token"] = token
+        return Response(data, status=201)
 
 
 class TenantInviteRevokeView(APIView):

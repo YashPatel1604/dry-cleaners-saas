@@ -1,6 +1,13 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Tenant, TenantMembership, TenantInvite
+from .models import (
+    Tenant,
+    TenantMembership,
+    TenantInvite,
+    TenantMembershipEvent,
+    TenantConfigEvent,
+    TenantInviteEvent,
+)
 
 
 class TenantCreateSerializer(serializers.ModelSerializer):
@@ -68,6 +75,86 @@ class TenantMembershipSerializer(serializers.ModelSerializer):
     class Meta:
         model = TenantMembership
         fields = ["id", "user", "role", "is_active", "created_at"]
+
+
+class MeTenantSerializer(serializers.Serializer):
+    tenant_id = serializers.IntegerField()
+    tenant_slug = serializers.CharField()
+    tenant_name = serializers.CharField()
+    role = serializers.ChoiceField(choices=TenantMembership.Role.choices)
+
+
+class TenantMembershipEventSerializer(serializers.ModelSerializer):
+    actor_user_id = serializers.IntegerField(source="actor_id", allow_null=True)
+    subject_user_id = serializers.IntegerField()
+    subject_user_email = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TenantMembershipEvent
+        fields = [
+            "id",
+            "created_at",
+            "actor_user_id",
+            "subject_user_id",
+            "subject_user_email",
+            "action",
+            "old_role",
+            "new_role",
+            "is_active_before",
+            "is_active_after",
+            "metadata",
+        ]
+
+    def get_subject_user_email(self, obj) -> str | None:
+        return getattr(obj.subject_user, "email", None)
+
+
+class TenantConfigEventSerializer(serializers.ModelSerializer):
+    actor_user_id = serializers.IntegerField(source="actor_id", allow_null=True)
+
+    class Meta:
+        model = TenantConfigEvent
+        fields = [
+            "id",
+            "created_at",
+            "actor_user_id",
+            "key",
+            "old_value",
+            "new_value",
+        ]
+
+
+class TenantInviteEventSerializer(serializers.ModelSerializer):
+    actor_user_id = serializers.IntegerField(source="actor_id", allow_null=True)
+
+    class Meta:
+        model = TenantInviteEvent
+        fields = [
+            "id",
+            "created_at",
+            "actor_user_id",
+            "email",
+            "event_type",
+            "metadata",
+        ]
+
+
+class TenantReportsSummarySerializer(serializers.Serializer):
+    date = serializers.CharField()
+    orders = serializers.DictField()
+    money = serializers.DictField()
+    payments = serializers.DictField()
+
+
+class TenantReportsRangeSerializer(serializers.Serializer):
+    start = serializers.CharField()
+    end = serializers.CharField()
+    series = serializers.ListField(child=serializers.DictField())
+
+
+class TenantReportsUnpaidSerializer(serializers.Serializer):
+    count = serializers.IntegerField()
+    results = serializers.ListField(child=serializers.DictField())
 
 
 class TenantMembershipCreateSerializer(serializers.Serializer):
