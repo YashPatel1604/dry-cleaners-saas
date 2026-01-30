@@ -217,7 +217,7 @@ export default function Reports(): JSX.Element {
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           {unpaid?.results?.map((row) => (
-            <div key={row.order_id} className="rounded-xl border border-border bg-white/70 px-3 py-2">
+            <div key={row.order_id} className="rounded-lg border border-border bg-muted/40 px-3 py-2">
               <div className="flex items-center justify-between">
                 <div className="font-medium">
                   Order #{row.order_id} · {row.customer_name || "Walk-in"}

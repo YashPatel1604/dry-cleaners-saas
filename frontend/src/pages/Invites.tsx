@@ -77,7 +77,7 @@ export default function Invites(): JSX.Element {
             </Button>
           </div>
           {tokenReveal && (
-            <div className="rounded-xl border border-border bg-white/70 px-3 py-2 text-xs">
+            <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs">
               Invite token (debug): {tokenReveal}
             </div>
           )}
@@ -91,7 +91,7 @@ export default function Invites(): JSX.Element {
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           {invites.map((invite) => (
-            <div key={invite.id} className="rounded-xl border border-border bg-white/70 px-3 py-2">
+            <div key={invite.id} className="rounded-lg border border-border bg-muted/40 px-3 py-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <div className="font-medium">{invite.email}</div>

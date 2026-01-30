@@ -172,7 +172,7 @@ export default function CustomerDetail(): JSX.Element {
               orders.results.map((order) => (
                 <button
                   key={order.id}
-                  className="w-full rounded-xl border border-border bg-white/70 px-3 py-3 text-left transition hover:bg-white"
+                  className="w-full rounded-lg border border-border bg-muted/40 px-3 py-3 text-left transition hover:bg-muted/60"
                   onClick={() => navigate(`/orders/${order.id}`)}
                 >
                   <div className="flex items-center justify-between">

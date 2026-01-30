@@ -58,7 +58,7 @@ export default function SelectTenant(): JSX.Element {
                   key={tenant.tenant_id}
                   type="button"
                   onClick={() => onSelect(tenant.tenant_slug)}
-                  className="w-full rounded-xl border border-border bg-white/70 p-4 text-left transition hover:bg-white"
+                  className="w-full rounded-lg border border-border bg-muted/40 p-4 text-left transition hover:bg-muted/60"
                 >
                   <div className="flex items-center justify-between">
                     <div>

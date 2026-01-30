@@ -99,7 +99,7 @@ export default function Payments(): JSX.Element {
           <Input placeholder="Order ID" value={orderId} onChange={(e) => setOrderId(e.target.value)} />
           <Input placeholder="Amount (cents)" value={amount} onChange={(e) => setAmount(e.target.value)} />
           <select
-            className="h-10 rounded-xl border border-input bg-white/80 px-3 text-sm"
+            className="h-10 rounded-lg border border-input bg-card px-3 text-sm"
             value={method}
             onChange={(e) => setMethod(e.target.value)}
           >
@@ -130,7 +130,7 @@ export default function Payments(): JSX.Element {
             {payments.map((p) => (
               <div
                 key={p.id}
-                className="rounded-xl border border-border bg-white/70 px-3 py-2 text-sm"
+                className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm"
               >
                 <div className="flex items-center justify-between">
                   <div className="font-medium">
@@ -157,7 +157,7 @@ export default function Payments(): JSX.Element {
             {adjustments.map((a) => (
               <div
                 key={a.id}
-                className="rounded-xl border border-border bg-white/70 px-3 py-2 text-sm"
+                className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm"
               >
                 <div className="flex items-center justify-between">
                   <div className="font-medium">

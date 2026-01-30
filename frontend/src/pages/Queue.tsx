@@ -79,7 +79,7 @@ export default function Queue(): JSX.Element {
           {orders.map((order) => (
             <div
               key={order.id}
-              className="rounded-xl border border-border bg-white/70 px-3 py-3 text-sm"
+              className="rounded-lg border border-border bg-muted/40 px-3 py-3 text-sm"
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>

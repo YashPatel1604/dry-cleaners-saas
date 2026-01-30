@@ -77,7 +77,7 @@ export default function Team(): JSX.Element {
             onChange={(e) => setUsername(e.target.value)}
           />
           <select
-            className="h-10 rounded-xl border border-input bg-white/80 px-3 text-sm"
+            className="h-10 rounded-lg border border-input bg-card px-3 text-sm"
             value={role}
             onChange={(e) => setRole(e.target.value as "OWNER_ADMIN" | "OPERATOR")}
           >
@@ -97,7 +97,7 @@ export default function Team(): JSX.Element {
           {memberships.map((member) => (
             <div
               key={member.id}
-              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-white/70 px-3 py-2"
+              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2"
             >
               <div>
                 <div className="font-medium">{member.user.username}</div>
@@ -107,7 +107,7 @@ export default function Team(): JSX.Element {
               </div>
               <div className="flex items-center gap-2">
                 <select
-                  className="h-9 rounded-xl border border-input bg-white/80 px-2 text-xs"
+                  className="h-9 rounded-lg border border-input bg-card px-2 text-xs"
                   value={member.role}
                   onChange={(e) =>
                     updateMember(member.user.id, { role: e.target.value as Membership["role"] })

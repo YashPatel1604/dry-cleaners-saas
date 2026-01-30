@@ -99,7 +99,7 @@ export default function Customers(): JSX.Element {
               {customers.map((customer) => (
                 <button
                   key={customer.id}
-                  className="w-full rounded-xl border border-border bg-white/70 px-4 py-3 text-left transition hover:bg-white"
+                  className="w-full rounded-lg border border-border bg-muted/40 px-4 py-3 text-left transition hover:bg-muted/60"
                   onClick={() => navigate(`/customers/${customer.id}`)}
                 >
                   <div className="flex items-center justify-between">

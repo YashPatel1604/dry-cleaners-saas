@@ -436,7 +436,7 @@ export default function OrderDetail(): JSX.Element {
                   Status
                 </label>
                 <select
-                  className="h-9 rounded-xl border border-input bg-white/80 px-3 text-sm"
+                  className="h-9 rounded-lg border border-input bg-card px-3 text-sm"
                   value={order.status}
                   onChange={(e) => setStatus(e.target.value)}
                 >
@@ -484,7 +484,7 @@ export default function OrderDetail(): JSX.Element {
                     {customerResults.map((cust) => (
                       <button
                         key={cust.id}
-                        className="w-full rounded-xl border border-border bg-white/70 px-3 py-2 text-left text-xs hover:bg-white"
+                        className="w-full rounded-lg border border-border bg-muted/40 px-3 py-2 text-left text-xs hover:bg-muted/60"
                         onClick={() => setCustomer(cust.id)}
                       >
                         <div className="font-medium">{cust.name}</div>
@@ -512,7 +512,7 @@ export default function OrderDetail(): JSX.Element {
           <CardContent className="space-y-4">
             <div className="grid gap-3 md:grid-cols-[1.2fr_0.6fr_auto]">
               <select
-                className="h-10 rounded-xl border border-input bg-white/80 px-3 text-sm"
+                className="h-10 rounded-lg border border-input bg-card px-3 text-sm"
                 value={itemId}
                 onChange={(e) => setItemId(e.target.value)}
               >
@@ -536,7 +536,7 @@ export default function OrderDetail(): JSX.Element {
                 {receipt.items.map((item) => (
                   <div
                     key={item.id}
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-white/70 px-3 py-2"
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2"
                   >
                     <div>
                       <div className="font-medium">{item.item_name}</div>
@@ -577,7 +577,7 @@ export default function OrderDetail(): JSX.Element {
                 onChange={(e) => setPaymentAmount(e.target.value)}
               />
               <select
-                className="h-10 rounded-xl border border-input bg-white/80 px-3 text-sm"
+                className="h-10 rounded-lg border border-input bg-card px-3 text-sm"
                 value={paymentMethod}
                 onChange={(e) => setPaymentMethod(e.target.value)}
               >
@@ -600,7 +600,7 @@ export default function OrderDetail(): JSX.Element {
             </div>
             <div className="space-y-2 text-sm">
               {(receipt?.payments ?? []).map((p) => (
-                <div key={p.id} className="rounded-xl border border-border bg-white/70 px-3 py-2">
+                <div key={p.id} className="rounded-lg border border-border bg-muted/40 px-3 py-2">
                   <div className="flex items-center justify-between">
                     <span className="font-medium">{p.method}</span>
                     <span>{formatCurrency(p.amount_cents)}</span>
@@ -620,7 +620,7 @@ export default function OrderDetail(): JSX.Element {
                   onChange={(e) => setPickupAmount(e.target.value)}
                 />
                 <select
-                  className="h-10 rounded-xl border border-input bg-white/80 px-3 text-sm"
+                  className="h-10 rounded-lg border border-input bg-card px-3 text-sm"
                   value={pickupMethod}
                   onChange={(e) => setPickupMethod(e.target.value)}
                 >
@@ -655,7 +655,7 @@ export default function OrderDetail(): JSX.Element {
                   onChange={(e) => setCashOutAmount(e.target.value)}
                 />
                 <select
-                  className="h-10 rounded-xl border border-input bg-white/80 px-3 text-sm"
+                  className="h-10 rounded-lg border border-input bg-card px-3 text-sm"
                   value={cashOutMethod}
                   onChange={(e) => setCashOutMethod(e.target.value)}
                 >
@@ -711,7 +711,7 @@ export default function OrderDetail(): JSX.Element {
                 onChange={(e) => setAdjustmentAmount(e.target.value)}
               />
               <select
-                className="h-10 rounded-xl border border-input bg-white/80 px-3 text-sm"
+                className="h-10 rounded-lg border border-input bg-card px-3 text-sm"
                 value={adjustmentKind}
                 onChange={(e) => setAdjustmentKind(e.target.value)}
               >
@@ -722,7 +722,7 @@ export default function OrderDetail(): JSX.Element {
                 <option value="OTHER">OTHER</option>
               </select>
               <select
-                className="h-10 rounded-xl border border-input bg-white/80 px-3 text-sm"
+                className="h-10 rounded-lg border border-input bg-card px-3 text-sm"
                 value={adjustmentDirection}
                 onChange={(e) => setAdjustmentDirection(e.target.value)}
               >
@@ -740,7 +740,7 @@ export default function OrderDetail(): JSX.Element {
             </div>
             <div className="space-y-2 text-sm">
               {(receipt?.adjustments ?? []).map((adj) => (
-                <div key={adj.id} className="rounded-xl border border-border bg-white/70 px-3 py-2">
+                <div key={adj.id} className="rounded-lg border border-border bg-muted/40 px-3 py-2">
                   <div className="flex items-center justify-between">
                     <span className="font-medium">{adj.kind}</span>
                     <span>{formatCurrency(adj.amount_cents)}</span>
@@ -765,7 +765,7 @@ export default function OrderDetail(): JSX.Element {
             <Button onClick={addNote}>Add note</Button>
             <div className="space-y-2 text-sm">
               {notes.map((note) => (
-                <div key={note.id} className="rounded-xl border border-border bg-white/70 px-3 py-2">
+                <div key={note.id} className="rounded-lg border border-border bg-muted/40 px-3 py-2">
                   <div className="text-xs text-muted-foreground">
                     {note.author_username || "system"} · {formatDateTime(note.created_at)}
                   </div>
@@ -784,7 +784,7 @@ export default function OrderDetail(): JSX.Element {
         <CardContent className="space-y-2 text-sm">
           {timeline.length === 0 && <div className="text-muted-foreground">No events yet.</div>}
           {timeline.map((event) => (
-            <div key={event.id} className="rounded-xl border border-border bg-white/70 px-3 py-2">
+            <div key={event.id} className="rounded-lg border border-border bg-muted/40 px-3 py-2">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>{event.event_type}</span>
                 <span>{formatDateTime(event.created_at)}</span>

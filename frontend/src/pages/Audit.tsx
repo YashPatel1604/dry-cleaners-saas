@@ -75,7 +75,7 @@ export default function Audit(): JSX.Element {
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
             {membershipEvents.map((event) => (
-              <div key={event.id} className="rounded-xl border border-border bg-white/70 px-3 py-2">
+              <div key={event.id} className="rounded-lg border border-border bg-muted/40 px-3 py-2">
                 <div className="font-medium">{event.action}</div>
                 <div className="text-xs text-muted-foreground">
                   Subject {event.subject_user_id || event.subject_user_email || "unknown"}
@@ -97,7 +97,7 @@ export default function Audit(): JSX.Element {
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
             {configEvents.map((event) => (
-              <div key={event.id} className="rounded-xl border border-border bg-white/70 px-3 py-2">
+              <div key={event.id} className="rounded-lg border border-border bg-muted/40 px-3 py-2">
                 <div className="font-medium">{event.key}</div>
                 <div className="text-xs text-muted-foreground">
                   {event.old_value} → {event.new_value}
@@ -119,7 +119,7 @@ export default function Audit(): JSX.Element {
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
             {inviteEvents.map((event) => (
-              <div key={event.id} className="rounded-xl border border-border bg-white/70 px-3 py-2">
+              <div key={event.id} className="rounded-lg border border-border bg-muted/40 px-3 py-2">
                 <div className="font-medium">{event.event_type}</div>
                 <div className="text-xs text-muted-foreground">{event.email}</div>
                 <div className="text-xs text-muted-foreground">

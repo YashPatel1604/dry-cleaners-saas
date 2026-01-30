@@ -100,7 +100,7 @@ export default function Inventory(): JSX.Element {
           {items.map((item) => (
             <div
               key={item.id}
-              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-white/70 px-4 py-3"
+              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-4 py-3"
             >
               <div>
                 <div className="font-medium">{item.name}</div>
