@@ -1,17 +1,19 @@
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
-import { Package, Users, Wallet } from "lucide-react";
+import { FileText, Package, Users, Wallet } from "lucide-react";
 
 interface ExtrasPageProps {
   onOpenInventory: () => void;
   onOpenCustomers: () => void;
   onOpenDailyEarnings: () => void;
+  onOpenReports: () => void;
 }
 
 export function ExtrasPage({
   onOpenInventory,
   onOpenCustomers,
   onOpenDailyEarnings,
+  onOpenReports,
 }: ExtrasPageProps) {
   return (
     <div className="max-w-5xl">
@@ -65,6 +67,23 @@ export function ExtrasPage({
           </div>
           <Button className="mt-6" onClick={onOpenDailyEarnings}>
             View Earnings
+          </Button>
+        </Card>
+
+        <Card className="p-6 flex flex-col justify-between">
+          <div className="space-y-3">
+            <div className="bg-gray-100 w-12 h-12 rounded-full flex items-center justify-center">
+              <FileText className="w-6 h-6 text-gray-600" />
+            </div>
+            <div>
+              <h3 className="text-lg text-gray-900">Reports</h3>
+              <p className="text-sm text-gray-600">
+                Daily operational summaries and exports.
+              </p>
+            </div>
+          </div>
+          <Button className="mt-6" onClick={onOpenReports}>
+            Open Reports
           </Button>
         </Card>
       </div>

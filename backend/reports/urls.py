@@ -6,6 +6,7 @@ from .views import (
     DailyCashCloseReportView,
     CashDrawerReportView,
     OpsSummaryReportView,
+    ReportQueryView,
     RevenueReportView,
     SettlementBreakdownReportView,
     TopCustomersReportView,
@@ -22,4 +23,5 @@ urlpatterns = [
     path("settlement-breakdown/", SettlementBreakdownReportView.as_view(), name="settlement-breakdown"),
     path("customers/top/", TopCustomersReportView.as_view(), name="top-customers"),
     path("workload/", WorkloadReportView.as_view(), name="workload-report"),
+    path("query/", ReportQueryView.as_view(), name="report-query"),
 ]

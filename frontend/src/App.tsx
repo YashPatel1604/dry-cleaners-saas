@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Sparkles } from "lucide-react";
 
 import { fetchTenants } from "./api/auth";
 import type { TenantSummary } from "./api/auth";
@@ -65,11 +66,14 @@ import type { CustomerFormData as CustomerEditFormData } from "./components/Cust
 import type { CustomerListItem } from "./components/CustomerPages/CustomersRow";
 import { CustomersPage } from "./components/CustomerPages/CustomersPage";
 import { DailyEarningsPage } from "./components/ExtrasPages/DailyEarningsPage";
+import { DefaultReportsPage } from "./components/ExtrasPages/DefaultReportsPage";
 import { InventoryPage } from "./components/InventoryPages/InventoryPage";
 import type { InventoryItem } from "./components/InventoryPages/InventoryItemCard";
 import type { InventoryFormData } from "./components/InventoryPages/InventoryForm";
 import { ExtrasPage } from "./components/ExtrasPage";
 import { LoginPage } from "./components/LoginPage";
+import { DashboardSection } from "./components/DashboardPages/DashboardSection";
+import { AIAssistantDialog } from "./components/AIAssistantDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TenantSelector } from "./components/TenantSelector";
 import { TopNav } from "./components/TopNav";
@@ -80,6 +84,7 @@ import { toast } from "./components/ui/use-toast";
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(() => Boolean(getAccessToken()));
   const [activeSection, setActiveSection] = useState("home");
+  const [aiOpen, setAiOpen] = useState(false);
   const [tenants, setTenants] = useState<TenantSummary[]>([]);
   const [needsTenantSelection, setNeedsTenantSelection] = useState(false);
   const [dropMode, setDropMode] = useState<"lookup" | "register">("lookup");
@@ -117,6 +122,7 @@ export default function App() {
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState<string | null>(null);
   const [ordersView, setOrdersView] = useState<"list" | "detail">("list");
+  const [ordersFilters, setOrdersFilters] = useState({ status: "all", query: "" });
   const [orderDetailId, setOrderDetailId] = useState<string | null>(null);
   const [orderDetailLoading, setOrderDetailLoading] = useState(false);
   const [orderDetailError, setOrderDetailError] = useState<string | null>(null);
@@ -152,8 +158,11 @@ export default function App() {
     string[]
   >([]);
   const [extrasView, setExtrasView] = useState<
-    "menu" | "inventory" | "customers" | "earnings"
+    "menu" | "inventory" | "customers" | "earnings" | "reports"
   >("menu");
+  const [pendingExtrasView, setPendingExtrasView] = useState<
+    "menu" | "inventory" | "customers" | "earnings" | "reports" | null
+  >(null);
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [inventoryError, setInventoryError] = useState<string | null>(null);
@@ -776,10 +785,14 @@ export default function App() {
   }, [activeSection, isLoggedIn]);
 
   useEffect(() => {
-    if (activeSection === "extras") {
-      setExtrasView("menu");
+    if (activeSection !== "extras") return;
+    if (pendingExtrasView) {
+      setExtrasView(pendingExtrasView);
+      setPendingExtrasView(null);
+      return;
     }
-  }, [activeSection]);
+    setExtrasView("menu");
+  }, [activeSection, pendingExtrasView]);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -883,6 +896,16 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       <TopNav activeSection={activeSection} setActiveSection={setActiveSection} />
+      <AIAssistantDialog open={aiOpen} onOpenChange={setAiOpen} />
+      <button
+        type="button"
+        onClick={() => setAiOpen(true)}
+        className="fixed bottom-6 right-6 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg transition hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+        aria-label="Open AI assistant"
+        title="Open AI assistant"
+      >
+        <Sparkles className="h-5 w-5" />
+      </button>
       <div className="flex flex-1">
         <Sidebar onSelectSection={setActiveSection} />
         <main className="flex-1 p-8">
@@ -996,6 +1019,8 @@ export default function App() {
                       orders={orders}
                       loading={ordersLoading}
                       error={ordersError}
+                      filters={ordersFilters}
+                      onFilterChange={setOrdersFilters}
                       onCreate={() => {
                         setActiveSection("drop");
                         setDropMode("lookup");
@@ -1133,6 +1158,9 @@ export default function App() {
               onOpenDailyEarnings={() => {
                 setExtrasView("earnings");
               }}
+              onOpenReports={() => {
+                setExtrasView("reports");
+              }}
             />
           )}
           {activeSection === "extras" && extrasView === "inventory" && (
@@ -1193,11 +1221,41 @@ export default function App() {
               />
             </div>
           )}
+          {activeSection === "extras" && extrasView === "reports" && (
+            <div className="space-y-4">
+              <button
+                type="button"
+                className="text-sm text-gray-600 hover:text-gray-900"
+                onClick={() => setExtrasView("menu")}
+              >
+                ← Back to Extras
+              </button>
+              <DefaultReportsPage />
+            </div>
+          )}
               {activeSection === "dashboard" && (
-                <div className="text-center mt-20">
-                  <h2 className="text-2xl">Dashboard Section</h2>
-                  <p className="text-gray-600 mt-2">Additional dashboard views coming soon</p>
-                </div>
+                <DashboardSection
+                  onOpenOrders={(filters) => {
+                    setOrdersFilters({
+                      status: filters?.status ?? "all",
+                      query: filters?.query ?? "",
+                    });
+                    setActiveSection("orders");
+                    setOrdersView("list");
+                  }}
+                  onOpenDrop={() => {
+                    setActiveSection("drop");
+                    setDropMode("lookup");
+                  }}
+                  onOpenCustomers={() => {
+                    setPendingExtrasView("customers");
+                    setActiveSection("extras");
+                  }}
+                  onOpenReports={() => {
+                    setPendingExtrasView("reports");
+                    setActiveSection("extras");
+                  }}
+                />
               )}
             </>
           )}
