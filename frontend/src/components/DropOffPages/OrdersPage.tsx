@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { OrderCard } from './OrderCard';
 import { OrdersEmptyState } from './OrdersEmptyState';
 import { OrdersFilters } from './OrdersFilters';
@@ -37,6 +37,10 @@ export function OrdersPage({
   onViewOrder,
 }: OrdersPageProps) {
   const [localFilters, setLocalFilters] = useState(filters);
+
+  useEffect(() => {
+    setLocalFilters(filters);
+  }, [filters]);
 
   const handleStatusChange = (status: string) => {
     const newFilters = { ...localFilters, status };

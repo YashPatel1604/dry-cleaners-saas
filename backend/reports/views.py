@@ -23,7 +23,7 @@ from tenants.permissions import IsTenantMember
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from orders.models import Order
+from orders.models import Order, OrderItem
 from payments.models import Adjustment, Payment
 
 
@@ -949,5 +949,613 @@ class WorkloadReportView(APIView):
                     ),
                 },
                 "ready_unpaid_mode": "settled_only",
+            }
+        )
+
+
+def _parse_list(value):
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [v for v in value if v not in (None, "")]
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(",") if v.strip()]
+    return [value]
+
+
+def _parse_date(value: str | None):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValidationError({"date": "Invalid format. Use YYYY-MM-DD."}) from exc
+
+
+def _format_usd(cents: int | None) -> str:
+    try:
+        return f"${(int(cents or 0) / 100):.2f}"
+    except Exception:
+        return "$0.00"
+
+
+def _apply_filter(qs, field: str, op: str, value):
+    if value in (None, "") and op not in ("isnull",):
+        return qs
+
+    lookup = field
+    if op in ("eq", "exact"):
+        lookup = field
+    elif op == "ne":
+        return qs.exclude(**{field: value})
+    elif op == "icontains":
+        lookup = f"{field}__icontains"
+    elif op == "contains":
+        lookup = f"{field}__contains"
+    elif op == "in":
+        lookup = f"{field}__in"
+        value = _parse_list(value)
+    elif op == "gte":
+        lookup = f"{field}__gte"
+    elif op == "lte":
+        lookup = f"{field}__lte"
+    elif op == "gt":
+        lookup = f"{field}__gt"
+    elif op == "lt":
+        lookup = f"{field}__lt"
+    elif op == "isnull":
+        lookup = f"{field}__isnull"
+        value = bool(value) if value is not None else True
+    elif op == "date":
+        lookup = f"{field}__date"
+    elif op == "between":
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise ValidationError({"filters": "between expects [start, end]."})
+        start, end = value
+        return qs.filter(**{f"{field}__gte": start, f"{field}__lte": end})
+    else:
+        raise ValidationError({"filters": f"Unsupported op '{op}'."})
+
+    return qs.filter(**{lookup: value})
+
+
+def _build_item_rows(items_qs, tz, limit: int):
+    rows = []
+    qs = (
+        items_qs.select_related("order", "item", "order__customer")
+        .order_by("-order__created_at", "order_id", "id")[:limit]
+    )
+    for item in qs:
+        order = item.order
+        customer = order.customer
+        order_date = None
+        if order.created_at:
+            order_date = timezone.localtime(order.created_at, tz).date().isoformat()
+
+        rows.append(
+            {
+                "order_id": order.id,
+                "order_status": order.status,
+                "order_date": order_date,
+                "customer_id": order.customer_id,
+                "customer_name": getattr(customer, "name", None) if customer else None,
+                "customer_phone": getattr(customer, "phone", None) if customer else None,
+                "item_id": item.item_id,
+                "item_name": getattr(item.item, "name", None),
+                "item_sku": getattr(item.item, "sku", None),
+                "quantity": int(item.quantity or 0),
+                "unit_price_cents": int(item.unit_price_cents or 0),
+                "line_total_cents": int(item.line_total_cents or 0),
+                "order_total_cents": int(order.total_cents or 0),
+            }
+        )
+    return rows
+
+
+def _csv_response(rows, filename: str):
+    output = io.StringIO()
+    fieldnames = [
+        "order_id",
+        "order_status",
+        "order_date",
+        "customer_id",
+        "customer_name",
+        "customer_phone",
+        "item_id",
+        "item_name",
+        "item_sku",
+        "quantity",
+        "unit_price_cents",
+        "line_total_cents",
+        "order_total_cents",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+
+    resp = HttpResponse(output.getvalue(), content_type="text/csv")
+    resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
+
+
+def _pdf_response(rows, summary: dict, filters: dict, filename: str):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import (
+        SimpleDocTemplate,
+        Paragraph,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+
+    def _truncate(value: str, max_len: int) -> str:
+        if not value:
+            return "-"
+        value = str(value)
+        return value if len(value) <= max_len else f"{value[: max_len - 1]}…"
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        leftMargin=36,
+        rightMargin=36,
+        topMargin=36,
+        bottomMargin=36,
+        title="Order Items Report",
+    )
+    styles = getSampleStyleSheet()
+    elements = []
+
+    elements.append(Paragraph("Report: Order Items", styles["Title"]))
+    elements.append(Paragraph(f"Generated: {timezone.now().isoformat()}", styles["Normal"]))
+    if filters:
+        elements.append(Paragraph(f"Filters: {filters}", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    elements.append(Paragraph("Summary", styles["Heading2"]))
+    elements.append(Paragraph(f"Orders: {summary.get('orders_count', 0)}", styles["Normal"]))
+    elements.append(
+        Paragraph(
+            f"Order Total: {_format_usd(summary.get('orders_total_cents'))}",
+            styles["Normal"],
+        )
+    )
+    elements.append(
+        Paragraph(
+            f"Items Qty: {summary.get('items_quantity', 0)}",
+            styles["Normal"],
+        )
+    )
+    elements.append(
+        Paragraph(
+            f"Items Revenue: {_format_usd(summary.get('items_revenue_cents'))}",
+            styles["Normal"],
+        )
+    )
+    elements.append(Spacer(1, 12))
+
+    # Build table data with customer subtotals
+    table_rows = [["Date", "Order #", "Customer", "Item", "Qty", "Line Total"]]
+    subtotal_rows = []
+
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: (
+            (r.get("customer_name") or "").lower(),
+            r.get("order_date") or "",
+            r.get("order_id") or 0,
+        ),
+    )
+
+    current_customer = None
+    customer_qty = 0
+    customer_total = 0
+    grand_qty = 0
+    grand_total = 0
+
+    for row in sorted_rows:
+        customer = row.get("customer_name") or "Unknown"
+        if current_customer is None:
+            current_customer = customer
+        if customer != current_customer:
+            subtotal_rows.append(len(table_rows))
+            table_rows.append(
+                ["", "", f"{current_customer} total", "", str(customer_qty), _format_usd(customer_total)]
+            )
+            customer_qty = 0
+            customer_total = 0
+            current_customer = customer
+
+        qty = int(row.get("quantity") or 0)
+        line_total = int(row.get("line_total_cents") or 0)
+        customer_qty += qty
+        customer_total += line_total
+        grand_qty += qty
+        grand_total += line_total
+
+        table_rows.append(
+            [
+                (row.get("order_date") or "-")[:10],
+                str(row.get("order_id") or "-"),
+                _truncate(customer, 22),
+                _truncate(row.get("item_name") or "-", 22),
+                str(qty),
+                _format_usd(line_total),
+            ]
+        )
+
+    if current_customer is not None:
+        subtotal_rows.append(len(table_rows))
+        table_rows.append(
+            ["", "", f"{current_customer} total", "", str(customer_qty), _format_usd(customer_total)]
+        )
+
+    table_rows.append(["", "", "Grand Total", "", str(grand_qty), _format_usd(grand_total)])
+    subtotal_rows.append(len(table_rows) - 1)
+
+    table = Table(
+        table_rows,
+        colWidths=[70, 55, 140, 140, 40, 70],
+        repeatRows=1,
+        hAlign="LEFT",
+    )
+    table_style = TableStyle(
+        [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f4f6")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#111827")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 9),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
+            ("FONTSIZE", (0, 1), (-1, -1), 8),
+            ("ALIGN", (4, 1), (5, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]
+    )
+    for row_idx in subtotal_rows:
+        table_style.add("FONTNAME", (0, row_idx), (-1, row_idx), "Helvetica-Bold")
+        table_style.add("BACKGROUND", (0, row_idx), (-1, row_idx), colors.HexColor("#fafafa"))
+
+    table.setStyle(table_style)
+    elements.append(table)
+    doc.build(elements)
+
+    resp = HttpResponse(buf.getvalue(), content_type="application/pdf")
+    resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
+
+
+class ReportQueryView(APIView):
+    """
+    POST /api/reports/query/
+    Flexible reporting endpoint for AI-driven queries.
+    """
+    permission_classes = [IsTenantMember]
+
+    def post(self, request):
+        data = request.data or {}
+        tenant = request.tenant
+        tz = timezone.get_current_timezone()
+
+        output = str(data.get("output") or "summary").lower().strip()
+        if output not in ("summary", "csv", "pdf"):
+            raise ValidationError({"output": "Use one of: summary, csv, pdf."})
+
+        date_start = _parse_date(data.get("date_start"))
+        date_end = _parse_date(data.get("date_end"))
+        if date_start and not date_end:
+            date_end = date_start
+        if date_end and not date_start:
+            date_start = date_end
+
+        orders_qs = Order.objects.filter(tenant=tenant)
+        payments_qs = Payment.objects.filter(tenant=tenant)
+
+        if date_start and date_end:
+            start = timezone.make_aware(datetime.combine(date_start, datetime.min.time()), tz)
+            end = timezone.make_aware(datetime.combine(date_end, datetime.min.time()), tz) + timedelta(days=1)
+            orders_qs = orders_qs.filter(created_at__gte=start, created_at__lt=end)
+            payments_qs = payments_qs.filter(created_at__gte=start, created_at__lt=end)
+
+        status_list = _parse_list(data.get("status"))
+        exclude_status_list = _parse_list(data.get("exclude_status"))
+        include_cancelled = data.get("include_cancelled", False) in (
+            True,
+            "true",
+            "True",
+            "1",
+            "yes",
+        )
+        if status_list:
+            orders_qs = orders_qs.filter(status__in=status_list)
+        elif not include_cancelled:
+            orders_qs = orders_qs.exclude(status="CANCELLED")
+
+        if exclude_status_list:
+            orders_qs = orders_qs.exclude(status__in=exclude_status_list)
+
+        customer_id = data.get("customer_id")
+        if customer_id:
+            orders_qs = orders_qs.filter(customer_id=customer_id)
+            payments_qs = payments_qs.filter(order__customer_id=customer_id)
+
+        customer_name = data.get("customer_name")
+        if customer_name:
+            orders_qs = orders_qs.filter(customer__name__icontains=customer_name)
+
+        customer_phone = data.get("customer_phone")
+        if customer_phone:
+            orders_qs = orders_qs.filter(customer__phone__icontains=customer_phone)
+
+        customer_email = data.get("customer_email")
+        if customer_email:
+            orders_qs = orders_qs.filter(customer__email__icontains=customer_email)
+
+        item_contains = data.get("item_contains")
+        item_ids = _parse_list(data.get("item_ids"))
+        if item_contains:
+            orders_qs = orders_qs.filter(items__item__name__icontains=item_contains)
+            payments_qs = payments_qs.filter(order__items__item__name__icontains=item_contains)
+        if item_ids:
+            orders_qs = orders_qs.filter(items__item_id__in=item_ids)
+            payments_qs = payments_qs.filter(order__items__item_id__in=item_ids)
+
+        min_total = data.get("min_total_cents")
+        max_total = data.get("max_total_cents")
+        if min_total is not None:
+            orders_qs = orders_qs.filter(total_cents__gte=int(min_total))
+        if max_total is not None:
+            orders_qs = orders_qs.filter(total_cents__lte=int(max_total))
+
+        payment_methods = _parse_list(data.get("payment_method"))
+        if payment_methods:
+            payments_qs = payments_qs.filter(method__in=payment_methods)
+
+        payment_status = _parse_list(data.get("payment_status")) or [Payment.Status.CAPTURED]
+        payments_qs = payments_qs.filter(status__in=payment_status)
+
+        payment_directions = _parse_list(data.get("payment_direction"))
+        if payment_directions:
+            payments_qs = payments_qs.filter(direction__in=payment_directions)
+
+        extra_filters = data.get("filters") or []
+        item_filters = []
+        item_filter_map_items = {}
+        if extra_filters:
+            if not isinstance(extra_filters, list):
+                raise ValidationError({"filters": "Expected a list of filter objects."})
+
+            order_filter_map = {
+                "order.id": "id",
+                "order.status": "status",
+                "order.total_cents": "total_cents",
+                "order.subtotal_cents": "subtotal_cents",
+                "order.tax_cents": "tax_cents",
+                "order.paid_cents": "paid_cents",
+                "order.created_at": "created_at",
+                "order.due_at": "due_at",
+                "order.received_at": "received_at",
+                "order.in_progress_at": "in_progress_at",
+                "order.ready_at": "ready_at",
+                "order.completed_at": "completed_at",
+                "order.cancelled_at": "cancelled_at",
+                "order.picked_up_at": "picked_up_at",
+                "customer.id": "customer_id",
+                "customer.name": "customer__name",
+                "customer.phone": "customer__phone",
+                "customer.email": "customer__email",
+            }
+            item_filter_map_orders = {
+                "item.id": "items__item_id",
+                "item.name": "items__item__name",
+                "item.sku": "items__item__sku",
+            }
+            item_filter_map_items = {
+                "item.id": "item_id",
+                "item.name": "item__name",
+                "item.sku": "item__sku",
+            }
+            payment_filter_map = {
+                "payment.method": "method",
+                "payment.status": "status",
+                "payment.direction": "direction",
+                "payment.amount_cents": "amount_cents",
+                "payment.reference": "reference",
+                "payment.created_at": "created_at",
+            }
+
+            for filt in extra_filters:
+                if not isinstance(filt, dict):
+                    continue
+                field = filt.get("field")
+                op = str(filt.get("op") or "eq").lower()
+                value = filt.get("value")
+                if field in order_filter_map:
+                    orders_qs = _apply_filter(
+                        orders_qs, order_filter_map[field], op, value
+                    )
+                elif field in item_filter_map_orders:
+                    orders_qs = _apply_filter(
+                        orders_qs, item_filter_map_orders[field], op, value
+                    )
+                    item_filters.append((field, op, value))
+                elif field in payment_filter_map:
+                    payments_qs = _apply_filter(
+                        payments_qs, payment_filter_map[field], op, value
+                    )
+                    orders_qs = orders_qs.filter(payments__in=payments_qs)
+                else:
+                    raise ValidationError({"filters": f"Unsupported field '{field}'."})
+
+        orders_qs = orders_qs.distinct()
+        payments_qs = payments_qs.filter(order__in=orders_qs)
+
+        orders_count = orders_qs.count()
+        orders_total_cents = int(
+            orders_qs.aggregate(s=Coalesce(Sum("total_cents"), 0)).get("s") or 0
+        )
+        avg_ticket_cents = int(orders_total_cents / orders_count) if orders_count else 0
+
+        items_qs = OrderItem.objects.filter(order__in=orders_qs)
+        if item_contains:
+            items_qs = items_qs.filter(item__name__icontains=item_contains)
+        if item_ids:
+            items_qs = items_qs.filter(item_id__in=item_ids)
+        if item_filters:
+            for field, op, value in item_filters:
+                items_qs = _apply_filter(
+                    items_qs, item_filter_map_items[field], op, value
+                )
+
+        items_quantity = int(
+            items_qs.aggregate(s=Coalesce(Sum("quantity"), 0)).get("s") or 0
+        )
+        items_revenue_cents = int(
+            items_qs.aggregate(s=Coalesce(Sum("line_total_cents"), 0)).get("s") or 0
+        )
+
+        payment_in_cents = int(
+            payments_qs.filter(direction=Payment.Direction.IN).aggregate(
+                s=Coalesce(Sum("amount_cents"), 0)
+            )["s"]
+            or 0
+        )
+        payment_out_cents = int(
+            payments_qs.filter(direction=Payment.Direction.OUT).aggregate(
+                s=Coalesce(Sum("amount_cents"), 0)
+            )["s"]
+            or 0
+        )
+
+        method_rows = (
+            payments_qs.values("method")
+            .annotate(
+                count=Count("id"),
+                in_cents=Coalesce(
+                    Sum(
+                        Case(
+                            When(direction=Payment.Direction.IN, then="amount_cents"),
+                            default=0,
+                            output_field=IntegerField(),
+                        )
+                    ),
+                    0,
+                ),
+                out_cents=Coalesce(
+                    Sum(
+                        Case(
+                            When(direction=Payment.Direction.OUT, then="amount_cents"),
+                            default=0,
+                            output_field=IntegerField(),
+                        )
+                    ),
+                    0,
+                ),
+            )
+            .order_by("method")
+        )
+
+        by_method = [
+            {
+                "method": row["method"],
+                "count": int(row["count"] or 0),
+                "in_cents": int(row["in_cents"] or 0),
+                "out_cents": int(row["out_cents"] or 0),
+                "net_cents": int(row["in_cents"] or 0) - int(row["out_cents"] or 0),
+            }
+            for row in method_rows
+        ]
+
+        by_item = list(
+            items_qs.values("item_id", "item__name")
+            .annotate(
+                quantity=Coalesce(Sum("quantity"), 0),
+                revenue_cents=Coalesce(Sum("line_total_cents"), 0),
+            )
+            .order_by("-revenue_cents")[:50]
+        )
+
+        include_orders = data.get("include_orders", False) in (
+            True,
+            "true",
+            "True",
+            "1",
+            "yes",
+        )
+        preview_limit = int(data.get("limit", 50))
+        preview_limit = max(1, min(preview_limit, 200))
+        export_limit = int(data.get("export_limit", data.get("limit", 2000)))
+        export_limit = max(1, min(export_limit, 5000))
+
+        orders_preview = []
+        if include_orders:
+            for order in orders_qs.select_related("customer").order_by("-created_at")[
+                :preview_limit
+            ]:
+                orders_preview.append(
+                    {
+                        "id": order.id,
+                        "status": order.status,
+                        "created_at": order.created_at.isoformat() if order.created_at else None,
+                        "customer": {
+                            "id": order.customer_id,
+                            "name": getattr(order.customer, "name", None),
+                        },
+                        "total_cents": int(order.total_cents or 0),
+                    }
+                )
+
+        filters_payload = {
+            "date_start": str(date_start) if date_start else None,
+            "date_end": str(date_end) if date_end else None,
+            "status": status_list,
+            "exclude_status": exclude_status_list,
+            "customer_id": customer_id,
+            "customer_name": customer_name,
+            "customer_phone": customer_phone,
+            "customer_email": customer_email,
+            "item_contains": item_contains,
+            "item_ids": item_ids,
+            "payment_method": payment_methods,
+            "payment_status": payment_status,
+            "payment_direction": payment_directions,
+            "include_cancelled": include_cancelled,
+            "extra_filters": extra_filters,
+        }
+
+        summary_payload = {
+            "orders_count": orders_count,
+            "orders_total_cents": orders_total_cents,
+            "avg_ticket_cents": avg_ticket_cents,
+            "items_quantity": items_quantity,
+            "items_revenue_cents": items_revenue_cents,
+            "payments": {
+                "in_cents": payment_in_cents,
+                "out_cents": payment_out_cents,
+                "net_cents": payment_in_cents - payment_out_cents,
+                "by_method": by_method,
+            },
+        }
+
+        if output in ("csv", "pdf"):
+            rows = _build_item_rows(items_qs, tz, export_limit)
+            filename_base = "report-items"
+            if date_start and date_end:
+                filename_base = f"report-items-{date_start}-{date_end}"
+            filename = f"{filename_base}.{output}"
+            if output == "csv":
+                return _csv_response(rows, filename)
+            return _pdf_response(rows, summary_payload, filters_payload, filename)
+
+        return Response(
+            {
+                "filters": filters_payload,
+                "summary": summary_payload,
+                "items": {"by_item": by_item},
+                "orders": orders_preview,
             }
         )
