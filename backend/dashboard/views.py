@@ -40,15 +40,20 @@ class DashboardSummaryView(APIView):
 
         orders_qs = Order.objects.filter(tenant=tenant)
 
-        orders_today = orders_qs.filter(created_at__date=today).count()
+        orders_today = orders_qs.filter(
+            created_at__date=today
+        ).exclude(status="CANCELLED").count()
 
         orders_value_today_cents = (
             orders_qs.filter(created_at__date=today)
+            .exclude(status="CANCELLED")
             .aggregate(s=Sum("total_cents"))
             .get("s") or 0
         )
 
-        pay_qs = Payment.objects.filter(tenant=tenant, created_at__date=today)
+        pay_qs = Payment.objects.filter(
+            tenant=tenant, created_at__date=today
+        ).exclude(order__status="CANCELLED")
 
         captured_in = (
             pay_qs.filter(status=Payment.Status.CAPTURED,
