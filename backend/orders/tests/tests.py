@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
 from tenants.models import Tenant
+from tenants.models import TenantMembership
 from orders.models import Order
 
 from customers.models import Customer
@@ -17,6 +18,12 @@ class TestOrderTimeline(APITestCase):
             username="admin",
             password="pass1234",
             is_staff=True,
+        )
+        TenantMembership.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            role=TenantMembership.Role.OWNER_ADMIN,
+            is_active=True,
         )
 
         self.customer = Customer.objects.create(

@@ -6,7 +6,7 @@ from customers.models import Customer
 from inventory.models import InventoryItem
 from orders.models import Order, OrderItem
 from payments.models import Payment
-from tenants.models import Tenant
+from tenants.models import Tenant, TenantMembership
 
 pytestmark = pytest.mark.operator_safety
 
@@ -55,7 +55,22 @@ def build_order_with_item(*, tenant, customer, status: str) -> Order:
     return order
 
 
-def build_client(*, tenant, user) -> APIClient:
+def build_client(
+    *,
+    tenant,
+    user,
+    role=TenantMembership.Role.OWNER_ADMIN,
+    is_active: bool = True,
+) -> APIClient:
+    membership, created = TenantMembership.objects.get_or_create(
+        tenant=tenant,
+        user=user,
+        defaults={"role": role, "is_active": is_active},
+    )
+    if not created and (membership.role != role or membership.is_active != is_active):
+        membership.role = role
+        membership.is_active = is_active
+        membership.save(update_fields=["role", "is_active"])
     client = APIClient()
     client.force_authenticate(user=user)
     client.credentials(HTTP_X_TENANT=tenant.slug)
@@ -98,6 +113,7 @@ def test_receipt_endpoint_schema(django_user_model):
         "created_at",
         "settled_at",
         "customer",
+        "pdf_url",
         "items",
         "subtotal_cents",
         "tax_cents",
@@ -225,6 +241,9 @@ def test_pickup_payment_endpoint_schema(django_user_model):
     order_keys = {
         "id",
         "customer",
+        "customer_name",
+        "customer_phone",
+        "customer_email",
         "status",
         "due_at",
         "notes",

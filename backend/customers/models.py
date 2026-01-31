@@ -27,21 +27,24 @@ class Customer(models.Model):
     )
 
     name = models.CharField(max_length=120)
-    phone = models.CharField(max_length=30, blank=True)
+    phone = models.CharField(max_length=32, null=True, blank=True)
 
     # ✅ canonical phone for fast lookup/dedupe
     phone_e164 = models.CharField(max_length=20, blank=True, default="")
 
-    email = models.EmailField(blank=True)
-    notes = models.TextField(blank=True)
+    email = models.EmailField(null=True, blank=True)
+    notes = models.TextField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["tenant", "created_at"]),
             models.Index(fields=["tenant", "name"]),
+            models.Index(fields=["tenant", "phone"]),
+            models.Index(fields=["tenant", "email"]),
             models.Index(fields=["tenant", "phone_e164"]),  # ✅ fast lookup
         ]
         constraints = [
@@ -54,6 +57,10 @@ class Customer(models.Model):
         ]
 
     def save(self, *args, **kwargs):
+        if self.phone:
+            self.phone = self.phone.strip()
+        if self.email:
+            self.email = self.email.strip().lower()
         self.phone_e164 = normalize_phone_us(self.phone)
         super().save(*args, **kwargs)
 

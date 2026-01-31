@@ -18,17 +18,34 @@ from django.http import JsonResponse
 from django.contrib import admin
 from django.urls import path, include
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+from tenants.views import (
+    TenantSettingsView,
+    MeView,
+    MeTenantsView,
+    TenantMembershipsView,
+    TenantMembershipDetailView,
+    InviteAcceptView,
+)
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/auth/", include("accounts.urls")),
     path("api/tenants/", include("tenants.urls")),
+    path("api/tenant/", include("tenants.urls")),
+    path("api/tenant/", include("customers.urls")),
+    path("api/tenant/settings/", TenantSettingsView.as_view(), name="tenant-settings"),
+    path("api/tenant/memberships/", TenantMembershipsView.as_view(), name="tenant-memberships"),
+    path("api/tenant/memberships/<int:user_id>/", TenantMembershipDetailView.as_view(), name="tenant-membership-detail"),
+    path("api/me/", MeView.as_view(), name="me"),
+    path("api/me/tenants/", MeTenantsView.as_view(), name="me-tenants"),
+    path("api/invites/accept/", InviteAcceptView.as_view(), name="invite-accept"),
 
     path("api/", include("customers.urls")),
     path("api/", include("orders.urls")),
     path("api/", include("inventory.urls")),
     path("api/", include("payments.urls")),
     path("api/", include("dashboard.urls")),
+    path("api/reports/", include("reports.urls")),
 
 
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),

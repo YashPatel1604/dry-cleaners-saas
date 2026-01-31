@@ -1,6 +1,6 @@
 # orders/serializers.py
 from rest_framework import serializers
-from .models import Order, OrderItem, OrderStatusEvent
+from .models import Order, OrderItem, OrderStatusEvent, OrderNote
 from payments.models import Payment, Adjustment
 from customers.models import Customer
 
@@ -19,12 +19,18 @@ class OrderSerializer(serializers.ModelSerializer):
     net_paid_cents = serializers.SerializerMethodField()
     balance_due_cents = serializers.SerializerMethodField()
     change_due_cents = serializers.SerializerMethodField()
+    customer_name = serializers.CharField(source="customer.name", read_only=True, allow_null=True)
+    customer_phone = serializers.CharField(source="customer.phone", read_only=True, allow_null=True)
+    customer_email = serializers.CharField(source="customer.email", read_only=True, allow_null=True)
 
     class Meta:
         model = Order
         fields = [
             "id",
             "customer",
+            "customer_name",
+            "customer_phone",
+            "customer_email",
             "status",
             "due_at",
             "notes",
@@ -49,6 +55,9 @@ class OrderSerializer(serializers.ModelSerializer):
             "net_paid_cents",
             "balance_due_cents",
             "change_due_cents",
+            "customer_name",
+            "customer_phone",
+            "customer_email",
             "settled_at", "received_at", "in_progress_at", "ready_at", "completed_at", "cancelled_at", "picked_up_at",
         ]
 
@@ -142,6 +151,19 @@ class OrderStatusEventSerializer(serializers.ModelSerializer):
     def get_changed_by_email(self, obj):
         u = obj.changed_by
         return getattr(u, "email", None) if u else None
+
+
+class OrderCustomerUpdateSerializer(serializers.Serializer):
+    customer_id = serializers.IntegerField(required=False, allow_null=True)
+
+
+class OrderNoteSerializer(serializers.ModelSerializer):
+    author_id = serializers.IntegerField(source="author.id", read_only=True, allow_null=True)
+    author_username = serializers.CharField(source="author.username", read_only=True, allow_null=True)
+
+    class Meta:
+        model = OrderNote
+        fields = ["id", "note", "created_at", "author_id", "author_username"]
 
 
 # -----------------------------

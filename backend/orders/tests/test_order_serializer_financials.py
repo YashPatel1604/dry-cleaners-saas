@@ -4,7 +4,7 @@ pytestmark = pytest.mark.operator_safety
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from tenants.models import Tenant
+from tenants.models import Tenant, TenantMembership
 from customers.models import Customer
 from inventory.models import InventoryItem
 from orders.models import Order, OrderItem
@@ -36,7 +36,22 @@ def create_inventory_item(*, tenant, name: str, price_cents: int) -> InventoryIt
         f"Could not find a price field on InventoryItem. Fields: {sorted(field_names)}")
 
 
-def build_client(*, tenant, user) -> APIClient:
+def build_client(
+    *,
+    tenant,
+    user,
+    role=TenantMembership.Role.OWNER_ADMIN,
+    is_active: bool = True,
+) -> APIClient:
+    membership, created = TenantMembership.objects.get_or_create(
+        tenant=tenant,
+        user=user,
+        defaults={"role": role, "is_active": is_active},
+    )
+    if not created and (membership.role != role or membership.is_active != is_active):
+        membership.role = role
+        membership.is_active = is_active
+        membership.save(update_fields=["role", "is_active"])
     client = APIClient()
     client.force_authenticate(user=user)
     client.credentials(HTTP_X_TENANT=tenant.slug)

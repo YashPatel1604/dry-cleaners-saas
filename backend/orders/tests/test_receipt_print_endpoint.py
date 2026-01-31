@@ -6,7 +6,7 @@ pytestmark = pytest.mark.operator_safety
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from tenants.models import Tenant
+from tenants.models import Tenant, TenantMembership
 from customers.models import Customer
 from inventory.models import InventoryItem
 from orders.models import Order, OrderItem
@@ -20,6 +20,12 @@ def test_receipt_print_returns_pdf(django_user_model):
     tenant = Tenant.objects.create(slug="t-print", name="T Print")
     user = django_user_model.objects.create_user(
         username="u1", password="pw123")
+    TenantMembership.objects.create(
+        tenant=tenant,
+        user=user,
+        role=TenantMembership.Role.OWNER_ADMIN,
+        is_active=True,
+    )
 
     customer = Customer.objects.create(
         tenant=tenant,
@@ -78,6 +84,12 @@ def test_receipt_print_uses_presenter_payload(django_user_model, monkeypatch):
     tenant = Tenant.objects.create(slug="t-print2", name="T Print2")
     user = django_user_model.objects.create_user(
         username="u2", password="pw123")
+    TenantMembership.objects.create(
+        tenant=tenant,
+        user=user,
+        role=TenantMembership.Role.OWNER_ADMIN,
+        is_active=True,
+    )
 
     customer = Customer.objects.create(
         tenant=tenant,
@@ -142,4 +154,7 @@ def test_receipt_print_uses_presenter_payload(django_user_model, monkeypatch):
         fields=["subtotal_cents", "tax_cents", "total_cents", "paid_cents", "settled_at"])
 
     expected = ReceiptPresenter(order).build()
+    expected["pdf_url"] = resp.wsgi_request.build_absolute_uri(
+        f"/api/orders/{order.id}/receipt/print/"
+    )
     assert captured["receipt"] == expected

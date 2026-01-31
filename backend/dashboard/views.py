@@ -5,7 +5,7 @@ from datetime import timedelta, date
 from django.db.models import Count, Sum, Q
 from django.db.models.functions import TruncDate
 from django.utils import timezone
-from rest_framework.permissions import IsAuthenticated
+from tenants.permissions import IsTenantMember
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -30,7 +30,7 @@ def parse_range_days(raw: str | None) -> int:
 
 
 class DashboardSummaryView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantMember]
     OVERDUE_DAYS = 3
 
     def get(self, request):
@@ -40,15 +40,20 @@ class DashboardSummaryView(APIView):
 
         orders_qs = Order.objects.filter(tenant=tenant)
 
-        orders_today = orders_qs.filter(created_at__date=today).count()
+        orders_today = orders_qs.filter(
+            created_at__date=today
+        ).exclude(status="CANCELLED").count()
 
         orders_value_today_cents = (
             orders_qs.filter(created_at__date=today)
+            .exclude(status="CANCELLED")
             .aggregate(s=Sum("total_cents"))
             .get("s") or 0
         )
 
-        pay_qs = Payment.objects.filter(tenant=tenant, created_at__date=today)
+        pay_qs = Payment.objects.filter(
+            tenant=tenant, created_at__date=today
+        ).exclude(order__status="CANCELLED")
 
         captured_in = (
             pay_qs.filter(status=Payment.Status.CAPTURED,
@@ -87,7 +92,7 @@ class DashboardRevenueView(APIView):
     GET /api/dashboard/revenue/?range=7d|30d
     Returns daily buckets with zero-filled missing dates.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantMember]
 
     def get(self, request):
         tenant = request.tenant
@@ -167,7 +172,7 @@ class DashboardRevenueView(APIView):
 
 
 class DashboardOrdersByStatusView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantMember]
 
     def get(self, request):
         tenant = request.tenant

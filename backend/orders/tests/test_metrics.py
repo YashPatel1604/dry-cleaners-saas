@@ -7,7 +7,7 @@ from django.utils import timezone
 import pytest
 from rest_framework.test import APIClient
 
-from tenants.models import Tenant
+from tenants.models import Tenant, TenantMembership
 from customers.models import Customer
 from orders.models import Order
 from payments.models import Payment
@@ -25,6 +25,12 @@ class TestOrderMetrics(TestCase):
         self.other_tenant = Tenant.objects.create(name="T2", slug="t2")
 
         self.user = User.objects.create_user(username="admin", password="pass")
+        TenantMembership.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            role=TenantMembership.Role.OWNER_ADMIN,
+            is_active=True,
+        )
         self.client.force_authenticate(user=self.user)
         self.client.credentials(HTTP_X_TENANT=self.tenant.slug)
 
@@ -154,6 +160,12 @@ class TestOrderMetricsTimezoneWindow(TestCase):
 
         self.tenant = Tenant.objects.create(name="T TZ", slug="t-tz")
         self.user = User.objects.create_user(username="admin", password="pass")
+        TenantMembership.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            role=TenantMembership.Role.OWNER_ADMIN,
+            is_active=True,
+        )
         self.client.force_authenticate(user=self.user)
         self.client.credentials(HTTP_X_TENANT=self.tenant.slug)
 

@@ -119,6 +119,12 @@ After settlement:
 - No cash-out may be created.
 - Receipt rendering must use snapshot totals.
 
+Tax policy safety lock:
+- Tax policy is tenant-scoped (collects_tax, tax_rate_bps).
+- Tax policy affects only unsettled recomputation (recalc_order_totals).
+- Settled snapshots are immutable; policy changes must not rewrite history.
+- Reporting endpoints aggregate persisted values only.
+
 ---
 
 ## Idempotency Requirements

@@ -13,7 +13,11 @@ class Order(models.Model):
         Tenant, on_delete=models.CASCADE, related_name="orders"
     )
     customer = models.ForeignKey(
-        Customer, on_delete=models.PROTECT, related_name="orders"
+        Customer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="orders",
     )
 
     status = models.CharField(max_length=20, default="RECEIVED")
@@ -114,3 +118,27 @@ class OrderItem(models.Model):
     def save(self, *args, **kwargs):
         self.line_total_cents = self.quantity * self.unit_price_cents
         super().save(*args, **kwargs)
+
+
+class OrderNote(models.Model):
+    tenant = models.ForeignKey(
+        Tenant, on_delete=models.CASCADE, related_name="order_notes"
+    )
+    order = models.ForeignKey(
+        Order, on_delete=models.CASCADE, related_name="order_notes"
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="order_notes",
+    )
+    note = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "order", "created_at"]),
+        ]

@@ -4,51 +4,38 @@ from datetime import timezone as dt_timezone
 
 
 from django.db import transaction
+from django.conf import settings
+from django.core.mail import send_mail
 from django.utils import timezone
 from django.http import HttpResponse
 from django.db import IntegrityError
 from django.db.models import Q, Count, Sum
 from zoneinfo import ZoneInfo
 
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError, NotFound
 from rest_framework.response import Response
 
 from customers.models import Customer, normalize_phone_us
 from payments.models import Payment, Adjustment
 from payments.serializers import PaymentSerializer
 from audit.models import AuditEvent
-from .services import recalc_order_totals, ReceiptPresenter, render_receipt_pdf
+from .services import recalc_order_totals, ReceiptPresenter, render_receipt_pdf, receipt_financials_for_order
 
-from .models import Order, OrderItem, OrderStatusEvent
+from .models import Order, OrderItem, OrderStatusEvent, OrderNote
 from .serializers import (
     OrderSerializer,
     OrderItemSerializer,
     OrderReceiptSerializer,
     OrderStatusEventSerializer,
+    OrderCustomerUpdateSerializer,
+    OrderNoteSerializer,
 )
+from tenants.permissions import IsTenantMember
+from tenants.utils import parse_limit_offset
+from .utils import default_due_at_for_tenant
 
-
-def default_due_at_for_tenant(tenant, now=None):
-    """
-    Compute default pickup promise using tenant settings:
-    localdate(now) + default_turnaround_days at (default_ready_hour:default_ready_minute).
-    """
-    if now is None:
-        now = timezone.now()
-
-    due_day = timezone.localdate(
-        now) + timedelta(days=int(tenant.default_turnaround_days or 0))
-
-    hour = int(getattr(tenant, "default_ready_hour", 17) or 17)
-    minute = int(getattr(tenant, "default_ready_minute", 0) or 0)
-
-    tz = timezone.get_current_timezone()
-    return timezone.make_aware(
-        datetime(due_day.year, due_day.month, due_day.day, hour, minute, 0),
-        tz
-    )
 
 
 def compute_net_paid_and_balance(order):
@@ -71,9 +58,14 @@ def compute_net_paid_and_balance(order):
     return net_paid, balance_due
 
 
+def receipt_pdf_url(request, order) -> str:
+    path = f"/api/orders/{order.id}/receipt/print/"
+    return request.build_absolute_uri(path)
+
+
 class OrderViewSet(viewsets.ModelViewSet):
     serializer_class = OrderSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsTenantMember]
 
     def get_queryset(self):
         # keep list/retrieve fast
@@ -83,10 +75,17 @@ class OrderViewSet(viewsets.ModelViewSet):
             .prefetch_related("payments", "adjustments")
         )
 
-    def perform_create(self, serializer):
-        customer_id = serializer.validated_data["customer"].id
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset().order_by("-created_at")
+        limit, offset = parse_limit_offset(request, default_limit=None, max_limit=200)
+        if limit is not None:
+            qs = qs[offset: offset + limit]
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
 
-        if not Customer.objects.filter(id=customer_id, tenant=self.request.tenant).exists():
+    def perform_create(self, serializer):
+        customer = serializer.validated_data.get("customer")
+        if customer and not Customer.objects.filter(id=customer.id, tenant=self.request.tenant).exists():
             raise ValidationError(
                 {"customer": "Customer does not belong to this tenant."})
 
@@ -190,7 +189,9 @@ class OrderViewSet(viewsets.ModelViewSet):
             order.total_cents = order.settled_total_cents
             order.paid_cents = order.settled_paid_cents
 
-        return Response(OrderReceiptSerializer(order).data)
+        data = OrderReceiptSerializer(order).data
+        data["pdf_url"] = receipt_pdf_url(request, order)
+        return Response(data)
 
     @action(detail=True, methods=["get"], url_path="receipt/summary")
     def receipt_summary(self, request, pk=None):
@@ -271,11 +272,48 @@ class OrderViewSet(viewsets.ModelViewSet):
             order.paid_cents = order.settled_paid_cents
 
         receipt_dict = ReceiptPresenter(order).build()
+        receipt_dict["pdf_url"] = receipt_pdf_url(request, order)
         pdf_bytes = render_receipt_pdf(receipt_dict)
 
         resp = HttpResponse(pdf_bytes, content_type="application/pdf")
         resp["Content-Disposition"] = f'inline; filename="receipt-order-{order.id}.pdf"'
         return resp
+
+    @action(detail=True, methods=["post"], url_path="receipt/email")
+    def receipt_email(self, request, pk=None):
+        if not getattr(settings, "RECEIPT_EMAIL_ENABLED", False):
+            return Response({"detail": "Receipt email not enabled."}, status=501)
+
+        order = (
+            Order.objects.filter(tenant=request.tenant, pk=pk)
+            .select_related("customer")
+            .first()
+        )
+        if not order:
+            raise ValidationError({"order": "Order not found in this tenant."})
+
+        to_email = (request.data.get("to_email") or "").strip()
+        if not to_email:
+            to_email = getattr(order.customer, "email", "") or ""
+        if not to_email:
+            raise ValidationError({"to_email": "Recipient email required."})
+
+        pdf_url = receipt_pdf_url(request, order)
+        message = f"Your receipt is available here: {pdf_url}"
+
+        send_mail(
+            subject=f"Receipt for order #{order.id}",
+            message=message,
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+            recipient_list=[to_email],
+            fail_silently=False,
+        )
+
+        return Response({"status": "sent"})
+
+    @action(detail=True, methods=["get"], url_path="ticket.pdf")
+    def ticket_pdf(self, request, pk=None):
+        return self.receipt_print(request, pk=pk)
 
     @action(detail=True, methods=["post"], url_path="pickup-payment")
     def pickup_payment(self, request, pk=None):
@@ -749,25 +787,20 @@ class OrderViewSet(viewsets.ModelViewSet):
             tenant=request.tenant, order=order).order_by("created_at")
         return Response(OrderStatusEventSerializer(qs, many=True).data)
 
-    @action(detail=True, methods=["post"], url_path="set_customer")
-    def set_customer(self, request, pk=None):
-        customer_id = request.data.get("customer_id")
-        if not customer_id:
-            raise ValidationError({"customer_id": "Required"})
+    @action(detail=True, methods=["post"], url_path="mark_ready")
+    def mark_ready(self, request, pk=None):
+        order = self.get_object()
+        if order.status == "READY":
+            return Response(OrderSerializer(order).data)
 
-        order = Order.objects.filter(tenant=request.tenant, pk=pk).first()
-        if not order:
-            raise ValidationError({"order": "Order not found in this tenant."})
-
-        customer = Customer.objects.filter(
-            tenant=request.tenant, pk=customer_id).first()
-        if not customer:
-            raise ValidationError(
-                {"customer": "Customer not found in this tenant."})
-
-        order.customer = customer
-        order.save(update_fields=["customer"])
-
+        serializer = OrderSerializer(
+            order,
+            data={"status": "READY"},
+            partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
         return Response(OrderSerializer(order).data)
 
     @action(detail=True, methods=["post"], url_path="set_customer_by_phone")
@@ -952,6 +985,34 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         return Response({"order_id": order.id, "count": len(data), "events": data})
 
+    @action(detail=True, methods=["get", "post"], url_path="notes")
+    def notes(self, request, pk=None):
+        order = self.get_object()
+
+        if request.method.lower() == "post":
+            serializer = OrderNoteSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            note_text = serializer.validated_data["note"].strip()
+            if not note_text:
+                raise ValidationError({"note": "Note cannot be empty."})
+            note = OrderNote.objects.create(
+                tenant=request.tenant,
+                order=order,
+                author=request.user if request.user.is_authenticated else None,
+                note=note_text,
+            )
+            return Response(OrderNoteSerializer(note).data, status=201)
+
+        qs = (
+            OrderNote.objects.filter(tenant=request.tenant, order=order)
+            .select_related("author")
+            .order_by("-created_at")
+        )
+        limit, offset = parse_limit_offset(request, default_limit=50, max_limit=200)
+        if limit is not None:
+            qs = qs[offset: offset + limit]
+        return Response(OrderNoteSerializer(qs, many=True).data)
+
     @action(detail=True, methods=["get"], url_path="timeline")
     def timeline(self, request, pk=None):
         """
@@ -981,6 +1042,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             priority = {
                 "order.created": 10,
                 "status.change": 20,
+                "note.added": 25,
                 "payment.created": 30,
                 "payment.voided": 31,
                 "adjustment.applied": 40,
@@ -1030,7 +1092,27 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "meta": {"from_status": se.from_status, "to_status": se.to_status, "note": se.note or ""},
             }))
 
-        # 3) Payments
+        # 3) Notes
+        notes = (
+            OrderNote.objects
+            .filter(tenant=request.tenant, order=order)
+            .select_related("author")
+            .order_by("created_at")
+        )
+        for n in notes:
+            events.append(normalize_event({
+                "id": f"note:{n.id}",
+                "at": n.created_at,
+                "kind": "note.added",
+                "title": "Note added",
+                "summary": (n.note or "")[:140],
+                "actor": actor_from_user(n.author),
+                "amount": None,
+                "refs": {"order_id": order.id, "status_event_id": None, "payment_id": None, "adjustment_id": None},
+                "meta": {"note": n.note or ""},
+            }))
+
+        # 4) Payments
         payments = (
             Payment.objects
             .filter(tenant=request.tenant, order=order)
@@ -1060,7 +1142,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 },
             }))
 
-        # 4) Adjustments
+        # 5) Adjustments
         adjustments = (
             Adjustment.objects
             .filter(tenant=request.tenant, order=order)
@@ -1090,7 +1172,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 },
             }))
 
-        # 5) Settlement snapshot (derived)
+        # 6) Settlement snapshot (derived)
         if order.settled_at is not None:
             events.append(normalize_event({
                 "id": f"order:{order.id}:settlement",
@@ -1329,15 +1411,121 @@ class OrderViewSet(viewsets.ModelViewSet):
             | Q(id__icontains=q)
         ).select_related("customer")
 
-        qs = qs.order_by("-created_at")[:20]  # hard cap for counter speed
+        qs = qs.order_by("-created_at")
+        limit, offset = parse_limit_offset(request, default_limit=20, max_limit=50)
+        if limit is not None:
+            qs = qs[offset: offset + limit]
 
         ser = self.get_serializer(qs, many=True)
         return Response(ser.data)
 
+    @action(detail=False, methods=["get"], url_path="cards")
+    def cards(self, request):
+        """
+        GET /api/orders/cards/?q=...&status=...&limit=...&offset=...
+        Frontend-friendly order cards.
+        """
+        qs = (
+            Order.objects.filter(tenant=request.tenant)
+            .select_related("customer")
+            .prefetch_related("payments", "adjustments")
+        )
+
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            filters = (
+                Q(customer__name__icontains=q)
+                | Q(customer__phone__icontains=q)
+                | Q(customer__email__icontains=q)
+            )
+            if q.isdigit():
+                filters |= Q(id=int(q))
+            qs = qs.filter(filters)
+
+        status = (request.query_params.get("status") or "").strip()
+        if status:
+            qs = qs.filter(status=status)
+
+        qs = qs.order_by("-created_at")
+        count = qs.count()
+
+        limit, offset = parse_limit_offset(request, default_limit=50, max_limit=200)
+        if limit is not None:
+            qs = qs[offset: offset + limit]
+
+        results = []
+        for order in qs:
+            if order.settled_at is not None:
+                if order.settled_total_cents is not None:
+                    order.total_cents = order.settled_total_cents
+                if order.settled_paid_cents is not None:
+                    order.paid_cents = order.settled_paid_cents
+
+            financials = receipt_financials_for_order(order)
+            updated_at = max(
+                dt for dt in [
+                    order.created_at,
+                    order.received_at,
+                    order.in_progress_at,
+                    order.ready_at,
+                    order.completed_at,
+                    order.cancelled_at,
+                    order.picked_up_at,
+                    order.settled_at,
+                ] if dt is not None
+            )
+
+            customer = order.customer
+            results.append(
+                {
+                    "order_id": order.id,
+                    "pickup_id": str(order.id),
+                    "status": order.status,
+                    "created_at": order.created_at.isoformat(),
+                    "updated_at": updated_at.isoformat() if updated_at else None,
+                    "customer": {
+                        "id": customer.id if customer else None,
+                        "name": getattr(customer, "name", None) if customer else None,
+                        "phone": getattr(customer, "phone", None) if customer else None,
+                        "email": getattr(customer, "email", None) if customer else None,
+                    },
+                    "money": {
+                        "total_cents": int(order.total_cents or 0),
+                        "net_paid_cents": int(financials.get("net_paid_cents") or 0),
+                        "balance_due_cents": int(financials.get("balance_due_cents") or 0),
+                        "change_due_cents": int(financials.get("change_due_cents") or 0),
+                    },
+                }
+            )
+
+        return Response({"count": count, "results": results})
+
+    @action(detail=True, methods=["patch"], url_path="customer")
+    def set_customer(self, request, pk=None):
+        serializer = OrderCustomerUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        customer_id = serializer.validated_data.get("customer_id")
+
+        order = self.get_object()
+        if customer_id is None:
+            order.customer = None
+            order.save(update_fields=["customer"])
+            return Response({"order_id": order.id, "customer_id": None})
+
+        customer = Customer.objects.filter(
+            tenant=self.request.tenant, id=customer_id
+        ).first()
+        if customer is None:
+            raise NotFound()
+
+        order.customer = customer
+        order.save(update_fields=["customer"])
+        return Response({"order_id": order.id, "customer_id": customer.id})
+
 
 class OrderItemViewSet(viewsets.ModelViewSet):
     serializer_class = OrderItemSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsTenantMember]
 
     def get_queryset(self):
         return OrderItem.objects.filter(order__tenant=self.request.tenant)

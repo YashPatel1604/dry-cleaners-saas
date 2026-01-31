@@ -4,9 +4,9 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from tenants.models import Tenant
+from tenants.models import Tenant, TenantMembership
 from customers.models import Customer
-from orders.models import Order, OrderStatusEvent
+from orders.models import Order, OrderStatusEvent, OrderNote
 from payments.models import Payment, Adjustment
 
 User = get_user_model()
@@ -22,6 +22,12 @@ class TestOrderTimeline(TestCase):
         self.other_tenant = Tenant.objects.create(name="T2", slug="t2")
 
         self.user = User.objects.create_user(username="admin", password="pass")
+        TenantMembership.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            role=TenantMembership.Role.OWNER_ADMIN,
+            is_active=True,
+        )
         self.client.force_authenticate(user=self.user)
         self.client.credentials(HTTP_X_TENANT=self.tenant.slug)
 
@@ -89,6 +95,19 @@ class TestOrderTimeline(TestCase):
         self.assertIn("payment.created", kinds)
         self.assertIn("adjustment.applied", kinds)
         self.assertIn("settlement.snapshot", kinds)
+
+    def test_timeline_includes_notes(self):
+        OrderNote.objects.create(
+            tenant=self.tenant,
+            order=self.order,
+            author=self.user,
+            note="Handle with care",
+        )
+
+        r = self.client.get(f"/api/orders/{self.order.id}/timeline/")
+        self.assertEqual(r.status_code, 200)
+        kinds = [e["kind"] for e in r.json()]
+        self.assertIn("note.added", kinds)
 
     def test_timeline_sorted(self):
         OrderStatusEvent.objects.create(
