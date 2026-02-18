@@ -52,6 +52,8 @@ interface Settings {
   require_paid_in_full_at_pickup: boolean;
   collects_tax: boolean;
   tax_rate_bps: number;
+  order_tag_label_size: "2x1" | "4x2";
+  order_tag_copies: number;
 }
 
 interface AuditEvent {
@@ -73,6 +75,7 @@ interface AdminPageProps {
   onLogout?: () => void;
   onSwitchStore?: () => void;
   canSwitchStore?: boolean;
+  onSettingsChange?: (settings: Settings) => void;
 }
 
 const defaultSettings: Settings = {
@@ -82,6 +85,8 @@ const defaultSettings: Settings = {
   require_paid_in_full_at_pickup: false,
   collects_tax: false,
   tax_rate_bps: 0,
+  order_tag_label_size: "2x1",
+  order_tag_copies: 1,
 };
 
 const mapMember = (member: Membership): Member => ({
@@ -160,6 +165,7 @@ export function AdminPage({
   onLogout,
   onSwitchStore,
   canSwitchStore = false,
+  onSettingsChange,
 }: AdminPageProps) {
   const [activeTab, setActiveTab] = useState("members");
 
@@ -211,14 +217,18 @@ export function AdminPage({
 
     try {
       const data = await fetchSettings();
-      setSettings({
+      const mappedSettings = {
         default_turnaround_days: data.default_turnaround_days,
         default_ready_hour: data.default_ready_hour,
         default_ready_minute: data.default_ready_minute,
         require_paid_in_full_at_pickup: data.require_paid_in_full_at_pickup,
         collects_tax: data.collects_tax,
         tax_rate_bps: data.tax_rate_bps,
-      });
+        order_tag_label_size: data.order_tag_label_size,
+        order_tag_copies: data.order_tag_copies,
+      };
+      setSettings(mappedSettings);
+      onSettingsChange?.(mappedSettings);
     } catch (err) {
       setSettingsError(toErrorMessage(err, "Unable to load settings."));
     }
@@ -362,6 +372,7 @@ export function AdminPage({
     try {
       const saved = await updateSettings(newSettings as TenantSettings);
       setSettings(saved);
+      onSettingsChange?.(saved);
       toast({ title: "Settings saved." });
     } catch (err) {
       setSettingsError(toErrorMessage(err, "Unable to save settings."));

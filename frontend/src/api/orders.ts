@@ -3,9 +3,11 @@ import { apiFetch } from "./client";
 export type OrderCard = {
   order_id: number;
   pickup_id: string | null;
+  order_sku?: string;
   status: string;
   created_at: string;
   updated_at?: string;
+  barcode_svg_url?: string;
   customer?: {
     id: number;
     name: string;

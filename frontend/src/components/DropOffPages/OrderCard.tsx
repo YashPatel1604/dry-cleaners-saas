@@ -1,6 +1,7 @@
 import { Card } from '../ui/card';
 import { Badge } from '../ui/badge';
-import { ChevronRight } from 'lucide-react';
+import { Button } from '../ui/button';
+import { ChevronRight, Printer } from 'lucide-react';
 
 interface Order {
   id: string;
@@ -8,6 +9,7 @@ interface Order {
   phone: string;
   status: 'in-progress' | 'ready' | 'picked-up' | 'cancelled';
   invoice_number: string;
+  order_sku: string;
   total: number;
   created_at: string;
 }
@@ -15,6 +17,7 @@ interface Order {
 interface OrderCardProps {
   order: Order;
   onOpen: (orderId: string) => void;
+  onPrintTag?: (order: Order) => void;
 }
 
 const statusConfig = {
@@ -24,7 +27,7 @@ const statusConfig = {
   'cancelled': { label: 'Cancelled', variant: 'destructive' as const },
 };
 
-export function OrderCard({ order, onOpen }: OrderCardProps) {
+export function OrderCard({ order, onOpen, onPrintTag }: OrderCardProps) {
   const statusInfo = statusConfig[order.status];
 
   return (
@@ -32,7 +35,7 @@ export function OrderCard({ order, onOpen }: OrderCardProps) {
       className="p-4 hover:bg-gray-50 cursor-pointer transition-colors"
       onClick={() => onOpen(order.id)}
     >
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div className="flex-1 space-y-2">
           {/* Customer Name and Status */}
           <div className="flex items-center gap-3">
@@ -47,6 +50,9 @@ export function OrderCard({ order, onOpen }: OrderCardProps) {
           <div className="flex gap-4 text-sm">
             <span className="text-gray-600">
               Invoice: <span className="text-gray-900">{order.invoice_number}</span>
+            </span>
+            <span className="text-gray-600">
+              SKU: <span className="text-gray-900">{order.order_sku}</span>
             </span>
             <span className="text-gray-600">
               Total: <span className="text-gray-900">${order.total.toFixed(2)}</span>
@@ -65,7 +71,24 @@ export function OrderCard({ order, onOpen }: OrderCardProps) {
           </p>
         </div>
 
-        <ChevronRight className="w-5 h-5 text-gray-400 mt-1" />
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          {onPrintTag && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 px-2 text-xs"
+              onClick={(event) => {
+                event.stopPropagation();
+                onPrintTag(order);
+              }}
+            >
+              <Printer className="mr-1 h-3.5 w-3.5" />
+              Print Tag
+            </Button>
+          )}
+          <ChevronRight className="w-5 h-5 text-gray-400 mt-1" />
+        </div>
       </div>
     </Card>
   );

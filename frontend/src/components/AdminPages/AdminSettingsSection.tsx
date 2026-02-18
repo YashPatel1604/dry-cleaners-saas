@@ -6,6 +6,7 @@ import { AdminToggleField } from './AdminToggleField';
 import { AdminErrorState } from './AdminErrorState';
 import { Card } from '../ui/card';
 import { Separator } from '../ui/separator';
+import { Select, SelectContent, SelectItem, SelectTrigger } from '../ui/select';
 
 interface Settings {
   default_turnaround_days: number;
@@ -14,6 +15,8 @@ interface Settings {
   require_paid_in_full_at_pickup: boolean;
   collects_tax: boolean;
   tax_rate_bps: number;
+  order_tag_label_size: "2x1" | "4x2";
+  order_tag_copies: number;
 }
 
 interface AdminSettingsSectionProps {
@@ -129,6 +132,52 @@ export function AdminSettingsSection({
                 })
               }
               description="Customers must pay the full amount before picking up orders"
+            />
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* Order Tag Printing */}
+        <div>
+          <h3 className="text-lg text-gray-800 mb-4">Order Tag Printing</h3>
+          <div className="space-y-4">
+            <div className="space-y-2 max-w-md">
+              <label htmlFor="order_tag_label_size" className="text-gray-700">
+                Label Size
+              </label>
+              <p className="text-sm text-gray-600">
+                Choose the physical size used for SKU tag printing.
+              </p>
+              <Select
+                value={localSettings.order_tag_label_size}
+                onValueChange={(value) =>
+                  setLocalSettings({
+                    ...localSettings,
+                    order_tag_label_size: value as "2x1" | "4x2",
+                  })
+                }
+              >
+                <SelectTrigger id="order_tag_label_size" />
+                <SelectContent>
+                  <SelectItem value="2x1">2 x 1 inch</SelectItem>
+                  <SelectItem value="4x2">4 x 2 inch</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <AdminSettingField
+              id="order_tag_copies"
+              label="Copies Per Order Tag"
+              value={localSettings.order_tag_copies}
+              onChange={(value) =>
+                setLocalSettings({
+                  ...localSettings,
+                  order_tag_copies: Math.max(1, parseInt(value) || 1),
+                })
+              }
+              type="number"
+              description="How many identical SKU tags should print per order."
             />
           </div>
         </div>

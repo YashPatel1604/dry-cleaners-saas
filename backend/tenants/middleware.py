@@ -31,6 +31,11 @@ class TenantMiddleware(MiddlewareMixin):
     HEADER_NAME = "HTTP_X_TENANT"  # X-Tenant -> HTTP_X_TENANT
 
     def process_request(self, request):
+        # Only API routes are tenant-scoped.
+        if not request.path.startswith("/api/"):
+            request.tenant = None
+            return None
+
         OPEN_PATH_PREFIXES = (
             "/admin",
             "/api/docs",

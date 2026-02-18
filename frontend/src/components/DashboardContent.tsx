@@ -1,30 +1,36 @@
 import { useEffect, useState } from "react";
 import { FileText, Package, TrendingDown, TrendingUp } from "lucide-react";
-import { fetchDashboardSummary, fetchTotalInvoices } from "../api/dashboard";
+import { fetchDashboardSummary } from "../api/dashboard";
 import { Card } from "./ui/card";
 
 export function DashboardContent() {
   const [totalInvoices, setTotalInvoices] = useState<number | null>(null);
-  const [totalPieces] = useState<number | null>(null);
+  const [totalPieces, setTotalPieces] = useState<number | null>(null);
   const [todaysDrop, setTodaysDrop] = useState<string | null>(null);
   const [todaysPickup, setTodaysPickup] = useState<string | null>(null);
+  const [todaysDropDeltaPct, setTodaysDropDeltaPct] = useState<number | null | undefined>(
+    undefined
+  );
+  const [todaysPickupDeltaPct, setTodaysPickupDeltaPct] = useState<number | null | undefined>(
+    undefined
+  );
 
   useEffect(() => {
     let isMounted = true;
 
     const loadMetrics = async () => {
       try {
-        const [summary, invoicesCount] = await Promise.all([
-          fetchDashboardSummary(),
-          fetchTotalInvoices(),
-        ]);
+        const summary = await fetchDashboardSummary();
 
         if (!isMounted) return;
 
-        setTotalInvoices(invoicesCount);
+        setTotalInvoices(summary.orders_today ?? null);
+        setTotalPieces(summary.pieces_today ?? null);
         setTodaysDrop(summary.orders_value_today ?? null);
         setTodaysPickup(summary.collected_today ?? null);
-      } catch (err) {
+        setTodaysDropDeltaPct(summary.orders_value_change_pct);
+        setTodaysPickupDeltaPct(summary.collected_change_pct);
+      } catch {
         if (!isMounted) return;
       }
     };
@@ -49,6 +55,35 @@ export function DashboardContent() {
       style: "currency",
       currency: "USD",
     }).format(amount);
+  };
+
+  const formatDeltaPercent = (value: number) => {
+    const normalized = Math.abs(value) < 0.05 ? 0 : value;
+    const rounded = Number.parseFloat(normalized.toFixed(1));
+    const hasDecimal = !Number.isInteger(rounded);
+    const sign = rounded > 0 ? "+" : "";
+    return `${sign}${hasDecimal ? rounded.toFixed(1) : rounded.toFixed(0)}%`;
+  };
+
+  const renderDelta = (deltaPercent: number | null | undefined) => {
+    if (deltaPercent === undefined) return null;
+    if (deltaPercent === null || !Number.isFinite(deltaPercent)) {
+      return <p className="mt-2 text-sm text-gray-500">No baseline from yesterday</p>;
+    }
+
+    const normalizedDelta = Math.abs(deltaPercent) < 0.05 ? 0 : deltaPercent;
+    const isNegative = normalizedDelta < 0;
+
+    return (
+      <p
+        className={`mt-2 flex items-center gap-1 text-sm ${
+          isNegative ? "text-red-600" : "text-green-600"
+        }`}
+      >
+        {isNegative ? <TrendingDown className="h-4 w-4" /> : <TrendingUp className="h-4 w-4" />}
+        {formatDeltaPercent(normalizedDelta)} from yesterday
+      </p>
+    );
   };
 
   return (
@@ -87,10 +122,7 @@ export function DashboardContent() {
             <div>
               <p className="text-gray-600 text-sm mb-2">Today's Drop</p>
               <p className="text-4xl text-gray-900">{formatCurrency(todaysDrop)}</p>
-              <p className="text-green-600 text-sm mt-2 flex items-center gap-1">
-                <TrendingUp className="w-4 h-4" />
-                +12% from yesterday
-              </p>
+              {renderDelta(todaysDropDeltaPct)}
             </div>
             <div className="bg-green-100 p-3 rounded-lg">
               <TrendingDown className="w-6 h-6 text-green-600" />
@@ -104,10 +136,7 @@ export function DashboardContent() {
             <div>
               <p className="text-gray-600 text-sm mb-2">Today's Pickup</p>
               <p className="text-4xl text-gray-900">{formatCurrency(todaysPickup)}</p>
-              <p className="text-green-600 text-sm mt-2 flex items-center gap-1">
-                <TrendingUp className="w-4 h-6" />
-                +8% from yesterday
-              </p>
+              {renderDelta(todaysPickupDeltaPct)}
             </div>
             <div className="bg-orange-100 p-3 rounded-lg">
               <TrendingUp className="w-6 h-6 text-orange-600" />

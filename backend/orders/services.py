@@ -9,6 +9,7 @@ from django.db import transaction
 from django.db.models import Sum
 
 from .models import Order
+from .utils import order_sku_for_order_id
 
 
 def recalc_order_totals(order: Order, tax_rate: float = 0.08) -> None:
@@ -115,6 +116,7 @@ def render_receipt_pdf(receipt: Dict[str, Any]) -> bytes:
       - adjustments: [{kind, status, direction, amount_cents, ...}]
     """
     from reportlab.lib.pagesizes import letter
+    from reportlab.graphics.barcode import code128
     from reportlab.pdfgen import canvas
 
     buf = BytesIO()
@@ -140,11 +142,19 @@ def render_receipt_pdf(receipt: Dict[str, Any]) -> bytes:
             y = height - 40
 
     # Header
+    order_id = int(receipt.get("id") or 0)
+    order_number = receipt.get("order_number") or order_id
+    order_sku = receipt.get("order_sku") or order_sku_for_order_id(order_id)
+
     draw("Dry Cleaner")
-    draw(f"Order #{receipt.get('id')}")
+    draw(f"Order Number: {order_number}")
+    draw(f"Order SKU: {order_sku}")
     draw(f"Created: {receipt.get('created_at') or ''}")
     draw(f"Status: {receipt.get('status') or ''}")
     draw(f"Settled: {'YES' if receipt.get('settled_at') else 'NO'}")
+    barcode = code128.Code128(str(order_sku), barHeight=36, barWidth=1.2, humanReadable=True)
+    barcode.drawOn(c, x, y - 42)
+    y -= 52
     draw("")
 
     # Customer

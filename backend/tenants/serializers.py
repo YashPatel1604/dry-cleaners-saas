@@ -27,6 +27,8 @@ class TenantSerializer(serializers.ModelSerializer):
             "created_at",
             "collects_tax",
             "tax_rate_bps",
+            "order_tag_label_size",
+            "order_tag_copies",
         ]
 
 
@@ -40,6 +42,8 @@ class TenantDefaultsSerializer(serializers.ModelSerializer):
             "require_paid_in_full_at_pickup",
             "collects_tax",
             "tax_rate_bps",
+            "order_tag_label_size",
+            "order_tag_copies",
         ]
 
     def validate_default_turnaround_days(self, v):
@@ -60,6 +64,16 @@ class TenantDefaultsSerializer(serializers.ModelSerializer):
     def validate_tax_rate_bps(self, v):
         if v is None or int(v) < 0 or int(v) > 2000:
             raise serializers.ValidationError("Must be between 0 and 2000.")
+        return v
+
+    def validate_order_tag_label_size(self, v):
+        if v not in Tenant.OrderTagLabelSize.values:
+            raise serializers.ValidationError("Must be one of: 2x1, 4x2.")
+        return v
+
+    def validate_order_tag_copies(self, v):
+        if v is None or int(v) < 1 or int(v) > 20:
+            raise serializers.ValidationError("Must be between 1 and 20.")
         return v
 
 

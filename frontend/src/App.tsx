@@ -22,6 +22,7 @@ import { fetchPaymentsDailySummary } from "./api/payments";
 import {
   createInventoryItem,
   fetchInventoryItems,
+  resolveInventoryImageUrl,
   updateInventoryItem,
   type InventoryItemApi,
 } from "./api/inventory";
@@ -33,8 +34,10 @@ import {
   updateOrderItem,
   type OrderCard,
 } from "./api/orders";
+import { fetchSettings, type TenantSettings } from "./api/admin";
 import {
   addOrderNote,
+  fetchOrderBarcodeSvg,
   createPickupPayment,
   fetchOrderNotes,
   fetchOrderReceipt,
@@ -80,6 +83,11 @@ import { TopNav } from "./components/TopNav";
 import { AdminPage } from "./components/AdminPages/AdminPage";
 import { Toaster } from "./components/ui/toaster";
 import { toast } from "./components/ui/use-toast";
+import {
+  formatOrderSku,
+  openOrderSkuTagPrint,
+  type OrderTagLabelSize,
+} from "./lib/orderTags";
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(() => Boolean(getAccessToken()));
@@ -108,6 +116,13 @@ export default function App() {
   const [dropDialogOpen, setDropDialogOpen] = useState(false);
   const [dropDialogLoading, setDropDialogLoading] = useState(false);
   const [dropDialogError, setDropDialogError] = useState<string | null>(null);
+  const [orderTagPrintSettings, setOrderTagPrintSettings] = useState<{
+    labelSize: OrderTagLabelSize;
+    copies: number;
+  }>({
+    labelSize: "2x1",
+    copies: 1,
+  });
   const [orders, setOrders] = useState<
     {
       id: string;
@@ -115,6 +130,8 @@ export default function App() {
       phone: string;
       status: "in-progress" | "ready" | "picked-up" | "cancelled";
       invoice_number: string;
+      order_sku: string;
+      barcode_svg_url?: string;
       total: number;
       created_at: string;
     }[]
@@ -324,9 +341,82 @@ export default function App() {
     phone: card.customer?.phone ?? "",
     status: mapOrderStatus(card.status),
     invoice_number: card.pickup_id ?? String(card.order_id),
+    order_sku: card.order_sku ?? formatOrderSku(card.order_id),
+    barcode_svg_url: card.barcode_svg_url,
     total: Number((card.money?.total_cents ?? 0) / 100),
     created_at: card.created_at,
   });
+
+  const normalizeOrderTagSettings = (
+    settings: Partial<TenantSettings> | null | undefined
+  ) => {
+    const labelSize: OrderTagLabelSize =
+      settings?.order_tag_label_size === "4x2" ? "4x2" : "2x1";
+    const parsedCopies = Number(settings?.order_tag_copies ?? 1);
+    const copies = Number.isFinite(parsedCopies)
+      ? Math.max(1, Math.min(20, Math.trunc(parsedCopies)))
+      : 1;
+    return { labelSize, copies };
+  };
+
+  const barcodeSvgToDataUri = (svg: string) =>
+    `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+
+  const fetchOrderBarcodeDataUri = async (orderId: number | string) => {
+    try {
+      const svg = await fetchOrderBarcodeSvg(orderId);
+      return barcodeSvgToDataUri(svg);
+    } catch {
+      return null;
+    }
+  };
+
+  const printOrderTag = async (options: {
+    orderId: number | string;
+    orderSku?: string;
+    customerName?: string;
+    openedWindow?: Window | null;
+  }) => {
+    const openedWindow =
+      options.openedWindow ??
+      window.open("", "_blank", "width=480,height=640");
+    if (!openedWindow) {
+      toast({
+        title: "Couldn't open print window.",
+        description: "Allow pop-ups to print SKU tags.",
+        variant: "error",
+      });
+      return false;
+    }
+    openedWindow.document.write(
+      "<!doctype html><html><body style='font-family: Arial, sans-serif; padding: 24px;'>Preparing SKU tag...</body></html>"
+    );
+    openedWindow.document.close();
+
+    const barcodeDataUri = await fetchOrderBarcodeDataUri(options.orderId);
+    const printed = openOrderSkuTagPrint({
+      ...options,
+      openedWindow,
+      labelSize: orderTagPrintSettings.labelSize,
+      copies: orderTagPrintSettings.copies,
+      barcodeDataUri: barcodeDataUri ?? undefined,
+    });
+    if (!printed) {
+      toast({
+        title: "Couldn't open print window.",
+        description: "Allow pop-ups to print SKU tags.",
+        variant: "error",
+      });
+      return false;
+    }
+    if (!barcodeDataUri) {
+      toast({
+        title: "Barcode unavailable for this print.",
+        description: "Tag printed with SKU text only.",
+      });
+    }
+    return true;
+  };
 
   const loadOrders = async () => {
     setOrdersLoading(true);
@@ -381,18 +471,23 @@ export default function App() {
     setOrderDetailCustomerId(null);
     setPickupPaymentError(null);
     try {
-      const [receipt, timeline, notes] = await Promise.all([
+      const [receipt, timeline, notes, barcodeDataUri] = await Promise.all([
         fetchOrderReceipt(orderId),
         fetchOrderTimeline(orderId),
         fetchOrderNotes(orderId),
+        fetchOrderBarcodeSvg(orderId)
+          .then(barcodeSvgToDataUri)
+          .catch(() => null),
       ]);
 
       const summary: OrderSummary & { id: string; number: string } = {
         id: String(receipt.id),
-        number: String(receipt.id),
+        number: String(receipt.order_number ?? receipt.id),
         customer_name: receipt.customer?.name ?? "Unknown",
         phone: receipt.customer?.phone ?? "",
         email: receipt.customer?.email ?? undefined,
+        order_sku: receipt.order_sku ?? formatOrderSku(receipt.id),
+        barcode_data_uri: barcodeDataUri ?? undefined,
         created_date: formatDate(receipt.created_at),
         due_date: formatDate(receipt.due_at),
         total: Number(receipt.total_cents / 100),
@@ -458,6 +553,7 @@ export default function App() {
     id: String(item.id),
     name: item.name,
     sku: item.sku ?? "",
+    imageUrl: resolveInventoryImageUrl(item.image_url),
     price: Number(item.unit_price_cents / 100),
     category: "",
     active: item.is_active,
@@ -725,6 +821,7 @@ export default function App() {
       await createInventoryItem({
         name: data.name.trim(),
         sku: data.sku.trim(),
+        image: data.imageFile,
         unit_price_cents: Math.round(price * 100),
         is_active: data.active,
       });
@@ -746,6 +843,8 @@ export default function App() {
       await updateInventoryItem(Number(id), {
         name: data.name.trim(),
         sku: data.sku.trim(),
+        image: data.imageFile,
+        clear_image: data.removeImage,
         unit_price_cents: Math.round(price * 100),
         is_active: data.active,
       });
@@ -827,6 +926,23 @@ export default function App() {
     if (!customerProfileId) return;
     void loadCustomerProfile(customerProfileId);
   }, [customerProfileId]);
+
+  useEffect(() => {
+    if (!isLoggedIn || needsTenantSelection) return;
+    let isMounted = true;
+    fetchSettings()
+      .then((settings) => {
+        if (!isMounted) return;
+        setOrderTagPrintSettings(normalizeOrderTagSettings(settings));
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setOrderTagPrintSettings({ labelSize: "2x1", copies: 1 });
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [isLoggedIn, needsTenantSelection]);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -1010,6 +1126,9 @@ export default function App() {
                   onLogout={handleLogout}
                   onSwitchStore={handleSwitchStore}
                   canSwitchStore={tenants.length > 1}
+                  onSettingsChange={(settings) => {
+                    setOrderTagPrintSettings(normalizeOrderTagSettings(settings));
+                  }}
                 />
               )}
               {activeSection === "orders" && (
@@ -1021,6 +1140,13 @@ export default function App() {
                       error={ordersError}
                       filters={ordersFilters}
                       onFilterChange={setOrdersFilters}
+                      onPrintTag={(order) => {
+                        void printOrderTag({
+                          orderId: order.id,
+                          orderSku: order.order_sku,
+                          customerName: order.customer_name,
+                        });
+                      }}
                       onCreate={() => {
                         setActiveSection("drop");
                         setDropMode("lookup");
@@ -1282,6 +1408,17 @@ export default function App() {
         error={dropDialogError ?? undefined}
         onCreate={async ({ dueDate, notes, items, payment }) => {
           if (!selectedCustomer) return;
+          const preparedPrintWindow = window.open(
+            "",
+            "_blank",
+            "width=480,height=640"
+          );
+          if (preparedPrintWindow) {
+            preparedPrintWindow.document.write(
+              "<!doctype html><html><body style='font-family: Arial, sans-serif; padding: 24px;'>Preparing SKU tag...</body></html>"
+            );
+            preparedPrintWindow.document.close();
+          }
           setDropDialogLoading(true);
           setDropDialogError(null);
           try {
@@ -1323,10 +1460,30 @@ export default function App() {
                 )
               );
             }
+            if (orderId) {
+              const orderSku = formatOrderSku(orderId);
+              await printOrderTag({
+                orderId,
+                orderSku,
+                customerName: selectedCustomer.name,
+                openedWindow: preparedPrintWindow,
+              });
+              toast({
+                title: "Order created.",
+                description: `SKU ${orderSku} opened for printing.`,
+              });
+            } else {
+              if (preparedPrintWindow && !preparedPrintWindow.closed) {
+                preparedPrintWindow.close();
+              }
+              toast({ title: "Order created." });
+            }
             setDropDialogOpen(false);
-            toast({ title: "Order created." });
             void loadOrders();
           } catch (err) {
+            if (preparedPrintWindow && !preparedPrintWindow.closed) {
+              preparedPrintWindow.close();
+            }
             setDropDialogError(
               err instanceof Error ? err.message : "Unable to create order."
             );

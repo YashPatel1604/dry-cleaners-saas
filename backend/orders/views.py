@@ -35,6 +35,7 @@ from .serializers import (
 from tenants.permissions import IsTenantMember
 from tenants.utils import parse_limit_offset
 from .utils import default_due_at_for_tenant
+from .utils import order_sku_for_order, order_id_from_sku
 
 
 
@@ -60,6 +61,11 @@ def compute_net_paid_and_balance(order):
 
 def receipt_pdf_url(request, order) -> str:
     path = f"/api/orders/{order.id}/receipt/print/"
+    return request.build_absolute_uri(path)
+
+
+def barcode_svg_url(request, order) -> str:
+    path = f"/api/orders/{order.id}/barcode.svg/"
     return request.build_absolute_uri(path)
 
 
@@ -191,6 +197,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         data = OrderReceiptSerializer(order).data
         data["pdf_url"] = receipt_pdf_url(request, order)
+        data["barcode_svg_url"] = barcode_svg_url(request, order)
         return Response(data)
 
     @action(detail=True, methods=["get"], url_path="receipt/summary")
@@ -273,6 +280,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         receipt_dict = ReceiptPresenter(order).build()
         receipt_dict["pdf_url"] = receipt_pdf_url(request, order)
+        receipt_dict["barcode_svg_url"] = barcode_svg_url(request, order)
         pdf_bytes = render_receipt_pdf(receipt_dict)
 
         resp = HttpResponse(pdf_bytes, content_type="application/pdf")
@@ -314,6 +322,26 @@ class OrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="ticket.pdf")
     def ticket_pdf(self, request, pk=None):
         return self.receipt_print(request, pk=pk)
+
+    @action(detail=True, methods=["get"], url_path="barcode.svg")
+    def barcode_svg(self, request, pk=None):
+        """
+        GET /api/orders/{id}/barcode.svg/
+        Returns a Code128 barcode SVG for the order SKU.
+        """
+        from reportlab.graphics.barcode import createBarcodeDrawing
+
+        order = self.get_object()
+        sku = order_sku_for_order(order)
+        drawing = createBarcodeDrawing(
+            "Code128",
+            value=sku,
+            barHeight=40,
+            barWidth=1.2,
+            humanReadable=True,
+        )
+        svg_bytes = drawing.asString("svg")
+        return HttpResponse(svg_bytes, content_type="image/svg+xml")
 
     @action(detail=True, methods=["post"], url_path="pickup-payment")
     def pickup_payment(self, request, pk=None):
@@ -1405,11 +1433,14 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         qs = self.get_queryset()
 
-        qs = qs.filter(
-            Q(customer__name__icontains=q)
-            | Q(customer__phone__icontains=q)
-            | Q(id__icontains=q)
-        ).select_related("customer")
+        sku_order_id = order_id_from_sku(q)
+        filters = Q(customer__name__icontains=q) | Q(customer__phone__icontains=q)
+        if q.isdigit():
+            filters |= Q(id=int(q))
+        if sku_order_id is not None:
+            filters |= Q(id=sku_order_id)
+
+        qs = qs.filter(filters).select_related("customer")
 
         qs = qs.order_by("-created_at")
         limit, offset = parse_limit_offset(request, default_limit=20, max_limit=50)
@@ -1440,6 +1471,9 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
             if q.isdigit():
                 filters |= Q(id=int(q))
+            sku_order_id = order_id_from_sku(q)
+            if sku_order_id is not None:
+                filters |= Q(id=sku_order_id)
             qs = qs.filter(filters)
 
         status = (request.query_params.get("status") or "").strip()
@@ -1480,6 +1514,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 {
                     "order_id": order.id,
                     "pickup_id": str(order.id),
+                    "order_sku": order_sku_for_order(order),
                     "status": order.status,
                     "created_at": order.created_at.isoformat(),
                     "updated_at": updated_at.isoformat() if updated_at else None,
@@ -1495,6 +1530,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                         "balance_due_cents": int(financials.get("balance_due_cents") or 0),
                         "change_due_cents": int(financials.get("change_due_cents") or 0),
                     },
+                    "barcode_svg_url": barcode_svg_url(request, order),
                 }
             )
 

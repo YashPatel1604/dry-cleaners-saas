@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Button } from '../ui/button';
@@ -7,6 +7,9 @@ import { Switch } from '../ui/switch';
 export interface InventoryFormData {
   name: string;
   sku: string;
+  imageFile: File | null;
+  existingImageUrl: string;
+  removeImage: boolean;
   price: string;
   category: string;
   active: boolean;
@@ -35,6 +38,9 @@ export function InventoryForm({
   const [formData, setFormData] = useState<InventoryFormData>({
     name: initialData?.name || '',
     sku: initialData?.sku || '',
+    imageFile: null,
+    existingImageUrl: initialData?.existingImageUrl || '',
+    removeImage: false,
     price: initialData?.price || '',
     category: initialData?.category || '',
     active: initialData?.active !== undefined ? initialData.active : true,
@@ -42,8 +48,15 @@ export function InventoryForm({
 
   const [errors, setErrors] = useState<ValidationErrors>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [previewUrl, setPreviewUrl] = useState(
+    initialData?.existingImageUrl || ''
+  );
+  const [fileInputKey, setFileInputKey] = useState(0);
 
-  const validateField = (name: keyof InventoryFormData, value: string | boolean): string | undefined => {
+  const validateField = (
+    name: keyof InventoryFormData,
+    value: string | boolean | File | null
+  ): string | undefined => {
     switch (name) {
       case 'name':
         return typeof value === 'string' && value.trim() === '' ? 'Item Name is required' : undefined;
@@ -58,7 +71,10 @@ export function InventoryForm({
     }
   };
 
-  const handleChange = (name: keyof InventoryFormData, value: string | boolean) => {
+  const handleChange = (
+    name: keyof InventoryFormData,
+    value: string | boolean | File | null
+  ) => {
     setFormData({ ...formData, [name]: value });
     
     if (touched[name]) {
@@ -96,6 +112,43 @@ export function InventoryForm({
     }
   };
 
+  const handleImageFileChange = (file: File | null) => {
+    setFormData((current) => ({
+      ...current,
+      imageFile: file,
+      removeImage: file ? false : current.removeImage,
+    }));
+  };
+
+  const handleDiscardSelectedImage = () => {
+    setFormData((current) => ({
+      ...current,
+      imageFile: null,
+      removeImage: false,
+    }));
+    setFileInputKey((current) => current + 1);
+  };
+
+  const handleDeleteCurrentImage = () => {
+    setFormData((current) => ({
+      ...current,
+      imageFile: null,
+      existingImageUrl: '',
+      removeImage: true,
+    }));
+    setFileInputKey((current) => current + 1);
+  };
+
+  useEffect(() => {
+    if (!formData.imageFile) {
+      setPreviewUrl(formData.existingImageUrl);
+      return;
+    }
+    const objectUrl = URL.createObjectURL(formData.imageFile);
+    setPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [formData.imageFile, formData.existingImageUrl]);
+
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       {/* Item Name */}
@@ -125,6 +178,46 @@ export function InventoryForm({
           value={formData.sku}
           onChange={(e) => handleChange('sku', e.target.value)}
         />
+      </div>
+
+      {/* Image Upload */}
+      <div>
+        <Label htmlFor="imageFile">Item Photo</Label>
+        <Input
+          key={fileInputKey}
+          id="imageFile"
+          type="file"
+          accept="image/*"
+          onChange={(e) => handleImageFileChange(e.target.files?.[0] ?? null)}
+        />
+        <p className="mt-1 text-xs text-gray-500">Upload from your computer (optional).</p>
+        {previewUrl && (
+          <div className="mt-3 h-36 overflow-hidden rounded-lg border border-gray-200 bg-gray-50">
+            <img src={previewUrl} alt="Preview" className="h-full w-full object-cover" />
+          </div>
+        )}
+        {formData.imageFile && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            onClick={handleDiscardSelectedImage}
+          >
+            Discard selected image
+          </Button>
+        )}
+        {!formData.imageFile && formData.existingImageUrl && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-2 text-red-600 hover:text-red-700"
+            onClick={handleDeleteCurrentImage}
+          >
+            Delete current image
+          </Button>
+        )}
       </div>
 
       {/* Price */}

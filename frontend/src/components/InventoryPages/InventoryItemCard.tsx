@@ -7,6 +7,7 @@ export interface InventoryItem {
   id: string;
   name: string;
   sku?: string;
+  imageUrl?: string;
   price: number;
   category?: string;
   active: boolean;
@@ -22,6 +23,20 @@ export function InventoryItemCard({ item, onEdit, onArchive }: InventoryItemCard
   return (
     <Card className="p-4">
       <div className="space-y-3">
+        {item.imageUrl && (
+          <div className="h-36 overflow-hidden rounded-lg border border-gray-200 bg-gray-50">
+            <img
+              src={item.imageUrl}
+              alt={item.name}
+              className="h-full w-full object-cover"
+              onError={(event) => {
+                const fallbackPath = "/item-art/default.svg";
+                if (event.currentTarget.src.endsWith(fallbackPath)) return;
+                event.currentTarget.src = fallbackPath;
+              }}
+            />
+          </div>
+        )}
         {/* Name and Status */}
         <div className="flex items-start justify-between">
           <div className="flex-1">

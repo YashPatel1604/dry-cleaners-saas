@@ -9,7 +9,7 @@ from tenants.permissions import IsTenantMember
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from orders.models import Order
+from orders.models import Order, OrderItem
 from payments.models import Payment
 
 
@@ -29,6 +29,12 @@ def parse_range_days(raw: str | None) -> int:
     return 7
 
 
+def percent_change(current: int, previous: int) -> float | None:
+    if previous == 0:
+        return 0.0 if current == 0 else None
+    return round(((current - previous) / abs(previous)) * 100, 1)
+
+
 class DashboardSummaryView(APIView):
     permission_classes = [IsTenantMember]
     OVERDUE_DAYS = 3
@@ -37,15 +43,38 @@ class DashboardSummaryView(APIView):
         tenant = request.tenant
         now = timezone.now()
         today = timezone.localdate(now)
+        yesterday = today - timedelta(days=1)
 
         orders_qs = Order.objects.filter(tenant=tenant)
+        today_orders_filter = Q(received_at__date=today) | (
+            Q(received_at__isnull=True) & Q(created_at__date=today)
+        )
+        today_order_items_filter = Q(order__received_at__date=today) | (
+            Q(order__received_at__isnull=True) & Q(order__created_at__date=today)
+        )
 
         orders_today = orders_qs.filter(
-            created_at__date=today
+            today_orders_filter
         ).exclude(status="CANCELLED").count()
+        pieces_today = (
+            OrderItem.objects.filter(
+                tenant=tenant,
+            )
+            .filter(today_order_items_filter)
+            .exclude(order__status="CANCELLED")
+            .aggregate(s=Sum("quantity"))
+            .get("s")
+            or 0
+        )
 
         orders_value_today_cents = (
             orders_qs.filter(created_at__date=today)
+            .exclude(status="CANCELLED")
+            .aggregate(s=Sum("total_cents"))
+            .get("s") or 0
+        )
+        orders_value_yesterday_cents = (
+            orders_qs.filter(created_at__date=yesterday)
             .exclude(status="CANCELLED")
             .aggregate(s=Sum("total_cents"))
             .get("s") or 0
@@ -67,6 +96,27 @@ class DashboardSummaryView(APIView):
         )
         collected_today_cents = int(captured_in) - int(captured_out)
 
+        pay_yesterday_qs = Payment.objects.filter(
+            tenant=tenant, created_at__date=yesterday
+        ).exclude(order__status="CANCELLED")
+        captured_yesterday_in = (
+            pay_yesterday_qs.filter(
+                status=Payment.Status.CAPTURED,
+                direction=Payment.Direction.IN,
+            )
+            .aggregate(s=Sum("amount_cents"))
+            .get("s") or 0
+        )
+        captured_yesterday_out = (
+            pay_yesterday_qs.filter(
+                status=Payment.Status.CAPTURED,
+                direction=Payment.Direction.OUT,
+            )
+            .aggregate(s=Sum("amount_cents"))
+            .get("s") or 0
+        )
+        collected_yesterday_cents = int(captured_yesterday_in) - int(captured_yesterday_out)
+
         in_progress = orders_qs.filter(status="IN_PROGRESS").count()
         ready = orders_qs.filter(status="READY").count()
 
@@ -79,8 +129,15 @@ class DashboardSummaryView(APIView):
 
         return Response({
             "orders_today": orders_today,
+            "pieces_today": int(pieces_today),
             "orders_value_today": cents_to_amount_str(orders_value_today_cents),
             "collected_today": cents_to_amount_str(collected_today_cents),
+            "orders_value_change_pct": percent_change(
+                int(orders_value_today_cents), int(orders_value_yesterday_cents)
+            ),
+            "collected_change_pct": percent_change(
+                int(collected_today_cents), int(collected_yesterday_cents)
+            ),
             "in_progress": in_progress,
             "ready": ready,
             "overdue": overdue,
