@@ -669,6 +669,27 @@ class TenantBootstrapView(APIView):
                     {"default_due_days": "Must be >= 0."}
                 )
             tenant_fields["default_turnaround_days"] = default_due_days
+        if "order_tag_label_size" in request.data:
+            order_tag_label_size = str(
+                request.data.get("order_tag_label_size") or ""
+            ).strip().lower()
+            if order_tag_label_size not in Tenant.OrderTagLabelSize.values:
+                raise ValidationError(
+                    {"order_tag_label_size": "Must be one of: 2x1, 4x2."}
+                )
+            tenant_fields["order_tag_label_size"] = order_tag_label_size
+        if "order_tag_copies" in request.data:
+            try:
+                order_tag_copies = int(request.data.get("order_tag_copies"))
+            except Exception as exc:
+                raise ValidationError(
+                    {"order_tag_copies": "Must be an integer."}
+                ) from exc
+            if order_tag_copies < 1 or order_tag_copies > 20:
+                raise ValidationError(
+                    {"order_tag_copies": "Must be between 1 and 20."}
+                )
+            tenant_fields["order_tag_copies"] = order_tag_copies
 
         with transaction.atomic():
             tenant = Tenant.objects.create(**tenant_fields)
@@ -694,6 +715,8 @@ class TenantBootstrapView(APIView):
                 ("require_paid_in_full_at_pickup", "require_paid_in_full_at_pickup"),
                 ("default_ready_hour", "default_ready_hour"),
                 ("default_turnaround_days", "default_turnaround_days"),
+                ("order_tag_label_size", "order_tag_label_size"),
+                ("order_tag_copies", "order_tag_copies"),
             ):
                 if field_name not in tenant_fields:
                     continue

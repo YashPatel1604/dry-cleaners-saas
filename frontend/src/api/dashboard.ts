@@ -2,16 +2,14 @@ import { apiFetch } from "./client";
 
 export type DashboardSummary = {
   orders_today: number;
+  pieces_today: number;
   orders_value_today: string;
   collected_today: string;
+  orders_value_change_pct?: number | null;
+  collected_change_pct?: number | null;
   in_progress: number;
   ready: number;
   overdue: number;
-};
-
-export type OrderCardsResponse = {
-  count: number;
-  results: unknown[];
 };
 
 export type OrdersByStatusRow = {
@@ -24,8 +22,8 @@ export async function fetchDashboardSummary() {
 }
 
 export async function fetchTotalInvoices() {
-  const data = await apiFetch<OrderCardsResponse>("/api/orders/cards/?limit=1&offset=0");
-  return data.count ?? 0;
+  const data = await fetchDashboardSummary();
+  return data.orders_today ?? 0;
 }
 
 export async function fetchOrdersByStatus() {

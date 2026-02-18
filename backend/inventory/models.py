@@ -8,6 +8,7 @@ class InventoryItem(models.Model):
 
     name = models.CharField(max_length=120)          # e.g. "Shirt"
     sku = models.CharField(max_length=40, blank=True)
+    image = models.ImageField(upload_to="inventory_items/", blank=True, null=True)
     unit_price_cents = models.PositiveIntegerField()  # e.g. 399
     is_active = models.BooleanField(default=True)
 

@@ -34,6 +34,8 @@ export type TenantSettings = {
   require_paid_in_full_at_pickup: boolean;
   collects_tax: boolean;
   tax_rate_bps: number;
+  order_tag_label_size: "2x1" | "4x2";
+  order_tag_copies: number;
 };
 
 export type MembershipAuditEvent = {

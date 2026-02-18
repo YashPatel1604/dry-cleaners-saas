@@ -10,6 +10,7 @@ interface Order {
   phone: string;
   status: 'in-progress' | 'ready' | 'picked-up' | 'cancelled';
   invoice_number: string;
+  order_sku: string;
   total: number;
   created_at: string;
 }
@@ -25,6 +26,7 @@ interface OrdersPageProps {
   onFilterChange?: (filters: { status: string; query: string }) => void;
   onCreate?: () => void;
   onViewOrder?: (orderId: string) => void;
+  onPrintTag?: (order: Order) => void;
 }
 
 export function OrdersPage({
@@ -35,6 +37,7 @@ export function OrdersPage({
   onFilterChange,
   onCreate,
   onViewOrder,
+  onPrintTag,
 }: OrdersPageProps) {
   const [localFilters, setLocalFilters] = useState(filters);
 
@@ -83,7 +86,8 @@ export function OrdersPage({
       return (
         order.customer_name.toLowerCase().includes(query) ||
         order.phone.toLowerCase().includes(query) ||
-        order.invoice_number.toLowerCase().includes(query)
+        order.invoice_number.toLowerCase().includes(query) ||
+        order.order_sku.toLowerCase().includes(query)
       );
     }
 
@@ -133,7 +137,12 @@ export function OrdersPage({
         {!loading && !error && filteredOrders.length > 0 && (
           <div className="space-y-3">
             {filteredOrders.map((order) => (
-              <OrderCard key={order.id} order={order} onOpen={handleOpenOrder} />
+              <OrderCard
+                key={order.id}
+                order={order}
+                onOpen={handleOpenOrder}
+                onPrintTag={onPrintTag}
+              />
             ))}
           </div>
         )}

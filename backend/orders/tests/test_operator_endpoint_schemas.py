@@ -107,6 +107,11 @@ def test_receipt_endpoint_schema(django_user_model):
 
     expected_fields = {
         "id",
+        "order_number",
+        "order_sku",
+        "barcode_value",
+        "barcode_svg_path",
+        "barcode_svg_url",
         "status",
         "due_at",
         "notes",
@@ -330,6 +335,10 @@ def test_settle_endpoint_schema(django_user_model):
 
     expected_fields = {
         "id",
+        "order_number",
+        "order_sku",
+        "barcode_value",
+        "barcode_svg_path",
         "status",
         "due_at",
         "notes",

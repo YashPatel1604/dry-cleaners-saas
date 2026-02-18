@@ -7,6 +7,10 @@ import hashlib
 
 
 class Tenant(models.Model):
+    class OrderTagLabelSize(models.TextChoices):
+        TWO_BY_ONE = "2x1", "2x1"
+        FOUR_BY_TWO = "4x2", "4x2"
+
     name = models.CharField(max_length=255)
 
     # Allow blank so callers don't have to think about it
@@ -21,6 +25,12 @@ class Tenant(models.Model):
     require_paid_in_full_at_pickup = models.BooleanField(default=True)
     collects_tax = models.BooleanField(default=True)
     tax_rate_bps = models.PositiveIntegerField(default=800)
+    order_tag_label_size = models.CharField(
+        max_length=3,
+        choices=OrderTagLabelSize.choices,
+        default=OrderTagLabelSize.TWO_BY_ONE,
+    )
+    order_tag_copies = models.PositiveSmallIntegerField(default=1)
 
     def clean(self):
         if self.default_turnaround_days is not None and self.default_turnaround_days > 30:
@@ -34,6 +44,10 @@ class Tenant(models.Model):
             raise ValidationError({"default_ready_minute": "Must be 0-59."})
         if self.tax_rate_bps is not None and self.tax_rate_bps > 2000:
             raise ValidationError({"tax_rate_bps": "Must be <= 2000."})
+        if self.order_tag_copies is not None and (
+            self.order_tag_copies < 1 or self.order_tag_copies > 20
+        ):
+            raise ValidationError({"order_tag_copies": "Must be between 1 and 20."})
 
     def save(self, *args, **kwargs):
         """

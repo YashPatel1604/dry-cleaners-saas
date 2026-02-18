@@ -2,6 +2,9 @@ import { apiFetch } from "./client";
 
 export type OrderReceipt = {
   id: number;
+  order_number?: number;
+  order_sku?: string;
+  barcode_svg_url?: string;
   status: string;
   due_at: string | null;
   notes?: string | null;
@@ -40,6 +43,10 @@ export type OrderReceipt = {
 
 export async function fetchOrderReceipt(orderId: string | number) {
   return apiFetch<OrderReceipt>(`/api/orders/${orderId}/receipt/`);
+}
+
+export async function fetchOrderBarcodeSvg(orderId: string | number) {
+  return apiFetch<string>(`/api/orders/${orderId}/barcode.svg/`);
 }
 
 export async function fetchOrderTimeline(orderId: string | number) {

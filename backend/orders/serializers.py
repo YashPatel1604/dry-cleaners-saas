@@ -3,6 +3,7 @@ from rest_framework import serializers
 from .models import Order, OrderItem, OrderStatusEvent, OrderNote
 from payments.models import Payment, Adjustment
 from customers.models import Customer
+from .utils import order_sku_for_order
 
 
 ORDER_STATUS_TRANSITIONS = {
@@ -232,6 +233,10 @@ class OrderReceiptSerializer(serializers.ModelSerializer):
     adjustments = serializers.SerializerMethodField()
     adjustments_net_cents = serializers.SerializerMethodField()
     net_paid_cents = serializers.SerializerMethodField()
+    order_number = serializers.SerializerMethodField()
+    order_sku = serializers.SerializerMethodField()
+    barcode_value = serializers.SerializerMethodField()
+    barcode_svg_path = serializers.SerializerMethodField()
 
     balance_due_cents = serializers.SerializerMethodField()
     change_due_cents = serializers.SerializerMethodField()
@@ -240,6 +245,10 @@ class OrderReceiptSerializer(serializers.ModelSerializer):
         model = Order
         fields = [
             "id",
+            "order_number",
+            "order_sku",
+            "barcode_value",
+            "barcode_svg_path",
             "status",
             "due_at",
             "notes",
@@ -258,6 +267,18 @@ class OrderReceiptSerializer(serializers.ModelSerializer):
             "payments",
             "adjustments",
         ]
+
+    def get_order_number(self, obj):
+        return int(obj.id)
+
+    def get_order_sku(self, obj):
+        return order_sku_for_order(obj)
+
+    def get_barcode_value(self, obj):
+        return order_sku_for_order(obj)
+
+    def get_barcode_svg_path(self, obj):
+        return f"/api/orders/{obj.id}/barcode.svg/"
 
     def get_adjustments(self, obj):
         # assumes related_name="adjustments" on Adjustment.order FK

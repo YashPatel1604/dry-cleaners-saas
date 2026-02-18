@@ -184,6 +184,7 @@ export function InventoryPage({
         initialData={editingItem ? {
           name: editingItem.name,
           sku: editingItem.sku || '',
+          existingImageUrl: editingItem.imageUrl || '',
           price: editingItem.price.toString(),
           category: editingItem.category || '',
           active: editingItem.active,

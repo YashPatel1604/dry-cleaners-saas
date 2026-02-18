@@ -22,7 +22,7 @@ export function OrdersFilters({
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
         <Input
           type="text"
-          placeholder="Search name, phone, or invoice #"
+          placeholder="Search name, phone, invoice #, or order SKU"
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
           className="pl-10"

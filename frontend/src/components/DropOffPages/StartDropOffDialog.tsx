@@ -18,6 +18,7 @@ interface InventoryItemOption {
   name: string;
   sku?: string;
   price: number;
+  imageUrl?: string;
 }
 
 interface StartDropOffDialogProps {
@@ -69,18 +70,20 @@ export function StartDropOffDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="w-[95vw] max-w-[95vw] p-0 sm:max-w-[1120px]">
         <DialogHeader>
-          <DialogTitle>Start Drop‑Off</DialogTitle>
+          <DialogTitle className="px-6 pt-6">Start Drop‑Off</DialogTitle>
         </DialogHeader>
-        <OrderCreateForm
-          customer={customer}
-          items={items}
-          onSubmit={handleSubmit}
-          onCancel={handleCancel}
-          loading={loading}
-          error={error}
-        />
+        <div className="px-6 pb-6 pt-2">
+          <OrderCreateForm
+            customer={customer}
+            items={items}
+            onSubmit={handleSubmit}
+            onCancel={handleCancel}
+            loading={loading}
+            error={error}
+          />
+        </div>
       </DialogContent>
     </Dialog>
   );

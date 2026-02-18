@@ -14,3 +14,5 @@ frontend/.env
 # OS / logs
 .DS_Store
 *.log
+
+node_modules/
