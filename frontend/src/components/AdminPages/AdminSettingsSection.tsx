@@ -177,7 +177,7 @@ export function AdminSettingsSection({
                 })
               }
               type="number"
-              description="How many identical SKU tags should print per order."
+              description="Fallback copies for reprints. New orders default to printing one tag per item."
             />
           </div>
         </div>

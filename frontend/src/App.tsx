@@ -224,6 +224,13 @@ export default function App() {
     setNeedsTenantSelection(true);
   };
 
+  const handleSelectSection = (section: string) => {
+    // Global navigation should always exit customer profile context.
+    setCustomerProfileId(null);
+    setCustomerProfileError(null);
+    setActiveSection(section);
+  };
+
   const handleRegisterSave = async (data: RegisterCustomerFormData) => {
     const fullName = `${data.firstName.trim()} ${data.lastName.trim()}`.trim();
     const normalizedPhone = data.phone.replace(/\D/g, "");
@@ -375,6 +382,7 @@ export default function App() {
     orderId: number | string;
     orderSku?: string;
     customerName?: string;
+    copies?: number;
     openedWindow?: Window | null;
   }) => {
     const openedWindow =
@@ -398,7 +406,10 @@ export default function App() {
       ...options,
       openedWindow,
       labelSize: orderTagPrintSettings.labelSize,
-      copies: orderTagPrintSettings.copies,
+      copies:
+        options.copies !== undefined
+          ? options.copies
+          : orderTagPrintSettings.copies,
       barcodeDataUri: barcodeDataUri ?? undefined,
     });
     if (!printed) {
@@ -1011,7 +1022,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
-      <TopNav activeSection={activeSection} setActiveSection={setActiveSection} />
+      <TopNav activeSection={activeSection} setActiveSection={handleSelectSection} />
       <AIAssistantDialog open={aiOpen} onOpenChange={setAiOpen} />
       <button
         type="button"
@@ -1023,7 +1034,7 @@ export default function App() {
         <Sparkles className="h-5 w-5" />
       </button>
       <div className="flex flex-1">
-        <Sidebar onSelectSection={setActiveSection} />
+        <Sidebar onSelectSection={handleSelectSection} />
         <main className="flex-1 p-8">
           {customerProfileId ? (
             <CustomerProfilePage
@@ -1462,15 +1473,20 @@ export default function App() {
             }
             if (orderId) {
               const orderSku = formatOrderSku(orderId);
+              const totalPieces = Math.max(
+                1,
+                items.reduce((sum, item) => sum + item.quantity, 0)
+              );
               await printOrderTag({
                 orderId,
                 orderSku,
                 customerName: selectedCustomer.name,
+                copies: totalPieces,
                 openedWindow: preparedPrintWindow,
               });
               toast({
                 title: "Order created.",
-                description: `SKU ${orderSku} opened for printing.`,
+                description: `SKU ${orderSku} opened for printing (${totalPieces} tags).`,
               });
             } else {
               if (preparedPrintWindow && !preparedPrintWindow.closed) {
