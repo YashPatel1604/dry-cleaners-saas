@@ -6,6 +6,8 @@ export interface OrderSummary {
   phone: string;
   email?: string;
   order_sku?: string;
+  location_barcode?: string;
+  rack_number?: string;
   barcode_data_uri?: string;
   created_date: string;
   due_date: string;
@@ -91,6 +93,18 @@ export function OrderSummaryCard({ order }: OrderSummaryCardProps) {
               alt={`Barcode ${order.order_sku ?? ""}`.trim()}
               className="h-20 w-full object-contain"
             />
+          </div>
+        )}
+
+        {(order.location_barcode || order.rack_number) && (
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <p className="text-sm text-gray-600 mb-2">Storage location</p>
+            {order.location_barcode && (
+              <p className="text-gray-900">Barcode: {order.location_barcode}</p>
+            )}
+            {order.rack_number && (
+              <p className="text-gray-900">Rack: {order.rack_number}</p>
+            )}
           </div>
         )}
 

@@ -1,207 +1,202 @@
-# Dry Cleaners SaaS (Location-Based POS, Inventory, Billing)
+# Dry Cleaners SaaS
 
-A **multi-tenant (one tenant = one store location)** dry cleaner management platform built with  
-**Django REST Framework**, **PostgreSQL**, and **React (Vite)** using **Tailwind + shadcn/ui**.
+Multi-tenant dry-cleaning POS and operations platform.
 
-Designed as a production-grade SaaS backend with **strict tenant isolation**,  
-**auditable financial flows**, and **operator-first workflows**.
+- Backend: Django 6 + DRF + PostgreSQL
+- Frontend: React 19 + Vite + TypeScript + Tailwind + shadcn/ui
+- Tenant model: one tenant = one physical store/location
 
 ---
 
 ## Local URLs
 
-- **Database (Docker)**: `127.0.0.1:5433`
-- **Backend API**: http://127.0.0.1:8000
-- **API Docs (Swagger)**: http://127.0.0.1:8000/api/docs/
-- **Frontend**: http://localhost:5173
+- Backend API: `http://127.0.0.1:8000`
+- Swagger docs: `http://127.0.0.1:8000/api/docs/`
+- Frontend: `http://localhost:5173`
+- DB (local): `127.0.0.1:5433`
 
 ---
 
-## Why This Exists
+## What Is Implemented
 
-Most dry cleaners still rely on paper tickets, spreadsheets, or outdated POS systems.
+### Multi-tenant + auth
 
-This project focuses on:
+- Tenant isolation via `X-Tenant` header and tenant membership checks.
+- JWT auth (SimpleJWT).
+- Tenant bootstrap/settings/member/invite flows.
 
-- Fast counter workflow (drop-off → processing → pickup)
-- Item-level tracking (each garment = one OrderItem)
-- Accurate billing with immutable audit trails
-- Store-level tenant isolation for SaaS scalability
+### Customer workflows
 
----
+- Customer create/search/update.
+- Customer profile with order history.
+- Drop-off flow starts from customer lookup or registration.
 
-## ✨ Features
+### Inventory workflows
 
-### SaaS & Security
-- ✅ Tenant isolation (one store = one tenant)
-- ✅ Tenant resolved via middleware (`X-Tenant`)
-- 🔜 RBAC (Owner / Manager / Staff)
+- Inventory CRUD with SKU, active/archive state.
+- Inventory image upload (file-based media).
+- Inventory image removal from edit flow.
 
----
+### Orders + lifecycle
 
-### Customer Management
-- ✅ Customer profiles
-- ✅ Phone normalization + fast lookup
-- ✅ Full order history per customer
-- ✅ Attach customer to order by ID or phone
+- Order + OrderItem model with recalculated totals.
+- Status flow with immutable status-event timeline.
+- Key statuses: `RECEIVED`, `IN_PROGRESS`, `READY`, `COMPLETED`, `PICKED_UP`, `CANCELLED`.
+- Order notes + timeline endpoints.
 
----
+### Payments + settlement + receipts
 
-### Orders & Lifecycle
-- ✅ Orders + OrderItems (each item = one garment)
-- ✅ Validated status transitions
-- ✅ Immutable status audit log
-- ✅ Lifecycle timestamps:
-  - received_at
-  - in_progress_at
-  - ready_at
-  - picked_up_at
-  - cancelled_at
+- Captured IN/OUT payments, pickup-time payments, change handling.
+- Idempotency on critical payment/pickup operations.
+- Settlement snapshot fields for accounting stability.
+- JSON receipt + PDF receipt endpoint parity.
 
----
+### Order SKU + barcode + tags
 
-### Operator Workflows
-- ✅ Order queues by status  
-  (`/api/orders/queue/?status=READY`)
-- ✅ Ready-but-unpaid queue  
-  (`/api/orders/queue/?status=READY&ready_unpaid=1` uses settled-only balances; see response header)
-- ✅ Order timeline view (operator audit visibility)
-- ✅ Receipt summary endpoint  
-  (`/api/orders/{id}/receipt/summary/`)
-- 🔜 Pickup preview endpoint
+- Auto-generated order SKU (`ORD-########`) per order.
+- Barcode SVG endpoint per order.
+- Order barcode shown in order detail.
+- Tag print flow with barcode + SKU.
+- Tenant settings for tag print size:
+  - `2x1`
+  - `4x2`
+- Tenant fallback tag copies setting.
+- New-order default print copies = total item quantity in that order.
 
----
+### Dashboard/reporting
 
-### Pickup Workflow
-- ✅ READY → PICKED_UP flow
-- ✅ Prevent invalid post-pickup transitions
-- ✅ Explicit pickup endpoint
-- ✅ Settlement-safe pickup logic
+- Dashboard daily metrics include:
+  - total invoices/orders today
+  - total pieces received today
+  - orders value today
+  - collected amount today
+- Reports endpoints for ops/workload/unpaid/summary/range.
 
----
+### Storage location barcode flow (rack flow)
 
-### Billing & Accounting
-- ✅ Itemized receipts
-- ✅ Payments (create / void / refund)
-- ✅ Post-settlement adjustments
-- ✅ Settlement snapshots:
-  - total
-  - paid
-  - change
-  - balance due
-- ✅ Idempotent settlement logic
-- ✅ Transaction-safe money math
-
----
-
-### Tags & Printing (Planned)
-- 🔜 Per-garment tag printing
-- 🔜 Invoice number printed on each tag
-- 🔜 Optional barcode / QR support
-- 🔜 Reprint-safe tag workflow
-
-*(Printing hardware integration intentionally deferred.)*
+- Location assignment by scan flow:
+  1. Scan location barcode.
+  2. If location is new, optional rack number entry.
+  3. Scan order barcode/SKU.
+- Dedicated **Scan Station** mode for continuous scanning with always-focused inputs.
+- Strict barcode rules enforced in API and UI:
+  - location: `LOC-...`
+  - order: `ORD-########`
+- Current order detail shows location barcode + rack number.
+- Pickup flow asks if location should be cleared.
+- Rack occupancy guard:
+  - A rack/location can only hold one active assigned order.
+  - If occupied, API returns conflict and UI asks:
+    - “Rack already full. Do you want to clear rack and continue?”
+  - If confirmed, old assignment is cleared and new order is assigned.
+- Rack status view shows each location as `Occupied`/`Empty` and current order SKU.
+- Storage assignment history is logged with actor + timestamp:
+  - assign
+  - clear
+  - force-clear eviction
+  - visible via order timeline and storage history endpoint.
+- Rack/location is intentionally **not** printed on receipt.
 
 ---
 
-## 🧱 Tech Stack
+## Run Locally
 
-### Backend
-- Django 4.x
-- Django REST Framework
-- PostgreSQL
-- SimpleJWT
-- drf-spectacular (OpenAPI)
+## 1) Backend
 
-### Frontend
-- React (Vite)
-- TypeScript
-- Tailwind CSS
-- shadcn/ui
-- TanStack Query
-
-### Dev & Ops
-- Docker Compose (local Postgres)
-- GitHub Actions CI
-- Tenant-safe middleware architecture
-
----
-
-## 🗺️ Architecture (High Level)
-
-- **Tenant = physical store**
-- Tenant context resolved server-side
-- Client never sends `tenant_id`
-- Financial operations are transactional + auditable
-- Status changes are immutable events
-
-See: `docs/ARCHITECTURE.md`
-
----
-
-## ✅ Milestones
-
-- ✅ **M0**: Repo + CI scaffold
-- ✅ **M1**: Backend + frontend scaffold
-- ✅ **M2**: Tenant isolation + middleware
-- ✅ **M3**: Customers + lookup + history
-- ✅ **M4**: Orders + items + receipts
-- ✅ **M5**: Payments + settlement + pickup
-- ✅ **M6**: Operator workflows (queues, timelines, dashboards)
-- 🔜 **M7**: RBAC
-- 🔜 **M8**: Deploy staging + prod
-
----
-
-## 🧪 Testing
-
-Operator safety suite:
-
-`pytest -m operator_safety` (run from `backend/`)
-
-This suite locks operator‑critical response shapes and financial invariants.
-
----
-
-## 🔎 Debugging request headers (backend)
-
-To verify headers for a request, hit the debug endpoint from your browser or curl:
-
-```
-GET /debug/headers/
+```bash
+cd backend
+source .venv/bin/activate
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py runserver
 ```
 
-It returns the resolved `X-Tenant` and all `HTTP_*` headers so you can confirm what’s being sent.
+## 2) Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
 ---
 
-## 🔐 Auth Token Storage (Current Plan)
+## Testing
 
-For local dev and fast iteration, we’re using:
+Run backend tests:
 
-- Access token in `localStorage`
+```bash
+cd backend
+source .venv/bin/activate
+pytest
+```
 
-Planned hardening (post‑MVP):
+Run operator safety suite:
 
-- HttpOnly refresh token cookie + CSRF protections
-- Short‑lived access tokens
-- CSP and tighter XSS mitigations
-
-Rationale: faster dev flow now, with a clear upgrade path once auth flows stabilize.
-
----
-
-## ✅ What’s in v0.6.0
-
-- Operator safety regression suite (`pytest -m operator_safety`)
-- Deterministic receipt JSON + PDF parity
-- Receipt summary endpoint for fast operator reads
-- Timeline and audit shape stability with deterministic ordering
-- Ready-unpaid queue clarity (settled-only mode)
-- Idempotent replay headers for operator workflows
+```bash
+cd backend
+source .venv/bin/activate
+pytest -m operator_safety
+```
 
 ---
 
-## 📄 License
+## Scanner Guidance (Store Rollout)
 
-No license selected yet (SaaS-oriented).
+For real store hardware, use barcode scanners in HID keyboard mode:
+
+- scanner acts like keyboard input
+- append `Enter` suffix from scanner configuration
+- scan fields in UI auto-submit and move to next step
+- if a scanner reads `LOC-*` or `ORD-*` while no text field is focused, app auto-opens Orders scan station
+
+This gives immediate compatibility without custom driver integration.
+
+Detailed setup and operator SOP: `docs/SCANNER_SETUP_SOP.md`
+
+---
+
+## Known Current Gaps
+
+- Frontend production build currently fails on an existing type issue in:
+  - `frontend/src/components/AIAssistantDialog.tsx`
+- No silent/background printer daemon integration yet (browser print flow used).
+- No native scanner driver integration yet (HID keyboard mode only).
+- No conveyor/carousel API integration yet.
+
+---
+
+## Future Work (Discussed, Not Done Yet)
+
+### Scanner + operations hardening
+
+- Bulk rack actions (clear/move many orders in one operation).
+- Optional multi-capacity rack model (today capacity is 1 order per location barcode).
+- Role-based controls around force-clear behavior.
+- Mobile camera scanner fallback workflow.
+
+### Hardware/automation integration
+
+- Print service integration for direct thermal label printers.
+- Conveyor/carousel system integration hooks.
+- Optional RFID support later (currently barcode-only by decision).
+
+### Product roadmap
+
+- Role hardening/RBAC expansion.
+- Deployment hardening and staging/production release workflows.
+- Additional reporting and operational alerts.
+
+---
+
+## Repo Pointers
+
+- API contract: `backend/API_CONTRACT.md`
+- Architecture notes: `docs/ARCHITECTURE.md`
+- Financial invariants: `docs/FINANCIAL_INVARIANTS.md`
+
+---
+
+## License
+
+No license selected yet.
