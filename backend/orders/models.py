@@ -23,6 +23,14 @@ class Order(models.Model):
     status = models.CharField(max_length=20, default="RECEIVED")
     due_at = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True)
+    storage_location = models.ForeignKey(
+        "StorageLocation",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="orders",
+    )
+    storage_assigned_at = models.DateTimeField(null=True, blank=True)
 
     # ✅ lifecycle timestamps (v0.3.1)
     received_at = models.DateTimeField(null=True, blank=True)
@@ -52,7 +60,33 @@ class Order(models.Model):
             models.Index(fields=["tenant", "status", "created_at"]),
             models.Index(fields=["tenant", "customer", "created_at"]),
             models.Index(fields=["tenant", "status", "ready_at"]),
+            models.Index(fields=["tenant", "storage_location"]),
         ]
+
+
+class StorageLocation(models.Model):
+    tenant = models.ForeignKey(
+        Tenant, on_delete=models.CASCADE, related_name="storage_locations"
+    )
+    barcode = models.CharField(max_length=80)
+    rack_number = models.CharField(max_length=20, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "barcode"],
+                name="uniq_storage_location_tenant_barcode",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "barcode"]),
+            models.Index(fields=["tenant", "rack_number"]),
+        ]
+
+    def __str__(self):
+        return f"{self.tenant_id}:{self.barcode}"
 
 
 class OrderStatusEvent(models.Model):

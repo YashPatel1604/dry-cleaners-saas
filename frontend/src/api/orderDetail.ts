@@ -70,9 +70,13 @@ export async function markOrderReady(orderId: string | number) {
   });
 }
 
-export async function markOrderPickedUp(orderId: string | number) {
+export async function markOrderPickedUp(
+  orderId: string | number,
+  options?: { clear_location?: boolean }
+) {
   return apiFetch(`/api/orders/${orderId}/pickup/`, {
     method: "POST",
+    body: JSON.stringify(options ?? {}),
   });
 }
 

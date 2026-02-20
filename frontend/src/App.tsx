@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Sparkles } from "lucide-react";
 
 import { fetchTenants } from "./api/auth";
@@ -27,12 +27,19 @@ import {
   type InventoryItemApi,
 } from "./api/inventory";
 import {
+  assignStorageLocationByScan,
+  clearOrderStorageLocation,
   createDropoffOrder,
   createOrderItem,
+  fetchStorageLocationStatus,
+  fetchOrderStorageLocation,
   deleteOrderItem,
   fetchOrderCards,
+  lookupStorageLocation,
   updateOrderItem,
   type OrderCard,
+  type StorageLocationAssignment,
+  type StorageLocationStatusRow,
 } from "./api/orders";
 import { fetchSettings, type TenantSettings } from "./api/admin";
 import {
@@ -81,6 +88,15 @@ import { Sidebar } from "./components/Sidebar";
 import { TenantSelector } from "./components/TenantSelector";
 import { TopNav } from "./components/TopNav";
 import { AdminPage } from "./components/AdminPages/AdminPage";
+import { Button } from "./components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./components/ui/dialog";
 import { Toaster } from "./components/ui/toaster";
 import { toast } from "./components/ui/use-toast";
 import {
@@ -88,6 +104,9 @@ import {
   openOrderSkuTagPrint,
   type OrderTagLabelSize,
 } from "./lib/orderTags";
+
+const LOCATION_SCANNER_RE = /^LOC-[A-Z0-9][A-Z0-9-]{0,30}$/;
+const ORDER_SCANNER_RE = /^ORD-\d{8}$/;
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(() => Boolean(getAccessToken()));
@@ -138,6 +157,18 @@ export default function App() {
   >([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState<string | null>(null);
+  const [storageLocationStatus, setStorageLocationStatus] = useState<
+    StorageLocationStatusRow[]
+  >([]);
+  const [storageLocationStatusLoading, setStorageLocationStatusLoading] =
+    useState(false);
+  const [storageLocationStatusError, setStorageLocationStatusError] = useState<
+    string | null
+  >(null);
+  const [ordersAutoScanSeed, setOrdersAutoScanSeed] = useState<{
+    token: number;
+    barcode: string;
+  } | null>(null);
   const [ordersView, setOrdersView] = useState<"list" | "detail">("list");
   const [ordersFilters, setOrdersFilters] = useState({ status: "all", query: "" });
   const [orderDetailId, setOrderDetailId] = useState<string | null>(null);
@@ -207,6 +238,48 @@ export default function App() {
       net_cents: number;
     }>;
   } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean;
+    title: string;
+    description: string;
+    confirmLabel: string;
+    cancelLabel: string;
+    confirmVariant: "default" | "destructive";
+  }>({
+    open: false,
+    title: "",
+    description: "",
+    confirmLabel: "Yes",
+    cancelLabel: "Cancel",
+    confirmVariant: "default",
+  });
+  const confirmResolverRef = useRef<((value: boolean) => void) | null>(null);
+
+  const requestConfirmation = (options: {
+    title: string;
+    description: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    confirmVariant?: "default" | "destructive";
+  }) =>
+    new Promise<boolean>((resolve) => {
+      confirmResolverRef.current = resolve;
+      setConfirmDialog({
+        open: true,
+        title: options.title,
+        description: options.description,
+        confirmLabel: options.confirmLabel ?? "Yes",
+        cancelLabel: options.cancelLabel ?? "Cancel",
+        confirmVariant: options.confirmVariant ?? "default",
+      });
+    });
+
+  const resolveConfirmation = (value: boolean) => {
+    const resolver = confirmResolverRef.current;
+    confirmResolverRef.current = null;
+    setConfirmDialog((prev) => ({ ...prev, open: false }));
+    if (resolver) resolver(value);
+  };
 
   const handleLogin = () => {
     setIsLoggedIn(true);
@@ -442,6 +515,96 @@ export default function App() {
     }
   };
 
+  const loadStorageLocationStatus = async () => {
+    setStorageLocationStatusLoading(true);
+    setStorageLocationStatusError(null);
+    try {
+      const payload = await fetchStorageLocationStatus();
+      setStorageLocationStatus(payload.results);
+    } catch (err) {
+      setStorageLocationStatusError(
+        err instanceof Error ? err.message : "Unable to load rack status."
+      );
+    } finally {
+      setStorageLocationStatusLoading(false);
+    }
+  };
+
+  const handleLookupStorageLocation = async (barcode: string) => {
+    const result = await lookupStorageLocation(barcode);
+    return {
+      exists: result.exists,
+      rack_number: result.rack_number,
+    };
+  };
+
+  const handleAssignStorageLocation = async (payload: {
+    locationBarcode: string;
+    orderBarcode: string;
+    rackNumber?: string;
+  }) => {
+    let assignment: StorageLocationAssignment;
+    try {
+      assignment = await assignStorageLocationByScan({
+        location_barcode: payload.locationBarcode,
+        order_barcode: payload.orderBarcode,
+        rack_number: payload.rackNumber,
+      });
+    } catch (err) {
+      const apiError = err as Error & {
+        status?: number;
+        data?: {
+          code?: string;
+          rack_number?: string | null;
+          current_order_sku?: string;
+        };
+      };
+      const isRackOccupied =
+        apiError.status === 409 && apiError.data?.code === "storage_location_occupied";
+      if (!isRackOccupied) {
+        throw err;
+      }
+
+      const rackText = apiError.data?.rack_number
+        ? `Rack ${apiError.data.rack_number}`
+        : "This rack";
+      const occupiedSku = apiError.data?.current_order_sku
+        ? ` (${apiError.data.current_order_sku})`
+        : "";
+      const confirmed = await requestConfirmation({
+        title: "Rack full",
+        description: `${rackText} is already full with another order${occupiedSku}. Do you want to clear rack and continue?`,
+        confirmLabel: "Yes",
+        cancelLabel: "Cancel",
+      });
+      if (!confirmed) {
+        throw new Error("Rack already full.");
+      }
+
+      assignment = await assignStorageLocationByScan({
+        location_barcode: payload.locationBarcode,
+        order_barcode: payload.orderBarcode,
+        rack_number: payload.rackNumber,
+        force_clear: true,
+      });
+    }
+
+    await loadOrders();
+    void loadStorageLocationStatus();
+    if (ordersView === "detail" && orderDetailId && String(assignment.order_id) === orderDetailId) {
+      await loadOrderDetail(orderDetailId);
+    }
+
+    toast({
+      title: "Location assigned.",
+      description: assignment.rack_number
+        ? `Order ${assignment.order_sku} -> ${assignment.location_barcode} (Rack ${assignment.rack_number})`
+        : `Order ${assignment.order_sku} -> ${assignment.location_barcode}`,
+    });
+
+    return assignment;
+  };
+
   const mapReceiptStatus = (status: string) => {
     if (status === "READY") return "ready";
     if (status === "PICKED_UP" || status === "COMPLETED") return "picked-up";
@@ -482,13 +645,14 @@ export default function App() {
     setOrderDetailCustomerId(null);
     setPickupPaymentError(null);
     try {
-      const [receipt, timeline, notes, barcodeDataUri] = await Promise.all([
+      const [receipt, timeline, notes, barcodeDataUri, storageLocation] = await Promise.all([
         fetchOrderReceipt(orderId),
         fetchOrderTimeline(orderId),
         fetchOrderNotes(orderId),
         fetchOrderBarcodeSvg(orderId)
           .then(barcodeSvgToDataUri)
           .catch(() => null),
+        fetchOrderStorageLocation(orderId).catch(() => null),
       ]);
 
       const summary: OrderSummary & { id: string; number: string } = {
@@ -498,6 +662,8 @@ export default function App() {
         phone: receipt.customer?.phone ?? "",
         email: receipt.customer?.email ?? undefined,
         order_sku: receipt.order_sku ?? formatOrderSku(receipt.id),
+        location_barcode: storageLocation?.location_barcode ?? undefined,
+        rack_number: storageLocation?.rack_number ?? undefined,
         barcode_data_uri: barcodeDataUri ?? undefined,
         created_date: formatDate(receipt.created_at),
         due_date: formatDate(receipt.due_at),
@@ -613,9 +779,13 @@ export default function App() {
 
   const handleCancelOrder = async () => {
     if (!orderDetailId) return;
-    const confirmed = window.confirm(
-      "Cancel this order? This cannot be undone."
-    );
+    const confirmed = await requestConfirmation({
+      title: "Cancel order?",
+      description: "Cancel this order? This cannot be undone.",
+      confirmLabel: "Yes",
+      cancelLabel: "Cancel",
+      confirmVariant: "destructive",
+    });
     if (!confirmed) return;
     setCancelOrderLoading(true);
     try {
@@ -890,6 +1060,7 @@ export default function App() {
     if (!isLoggedIn) return;
     if (activeSection !== "orders") return;
     void loadOrders();
+    void loadStorageLocationStatus();
     setOrdersView("list");
     setOrderDetailId(null);
   }, [activeSection, isLoggedIn]);
@@ -952,6 +1123,82 @@ export default function App() {
       });
     return () => {
       isMounted = false;
+    };
+  }, [isLoggedIn, needsTenantSelection]);
+
+  useEffect(() => {
+    return () => {
+      if (confirmResolverRef.current) {
+        confirmResolverRef.current(false);
+        confirmResolverRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isLoggedIn || needsTenantSelection) return;
+
+    let buffer = "";
+    let startedAt = 0;
+    let lastAt = 0;
+
+    const resetBuffer = () => {
+      buffer = "";
+      startedAt = 0;
+      lastAt = 0;
+    };
+
+    const isEditableTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.isContentEditable) return true;
+      const editable = target.closest("input, textarea, [contenteditable='true']");
+      return Boolean(editable);
+    };
+
+    const onWindowKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (isEditableTarget(event.target)) return;
+
+      const now = Date.now();
+      if (buffer && now - lastAt > 120) {
+        resetBuffer();
+      }
+
+      if (event.key === "Enter") {
+        if (!buffer) return;
+        const scanValue = buffer.trim().toUpperCase();
+        const elapsedMs = startedAt ? now - startedAt : 0;
+        resetBuffer();
+
+        const looksLikeScannerInput =
+          scanValue.length >= 6 && elapsedMs > 0 && elapsedMs <= 1000;
+        const supportedBarcode =
+          LOCATION_SCANNER_RE.test(scanValue) || ORDER_SCANNER_RE.test(scanValue);
+        if (!looksLikeScannerInput || !supportedBarcode) return;
+
+        setCustomerProfileId(null);
+        setCustomerProfileError(null);
+        setActiveSection("orders");
+        setOrdersView("list");
+        setOrderDetailId(null);
+        setOrdersAutoScanSeed({
+          token: Date.now(),
+          barcode: scanValue,
+        });
+        return;
+      }
+
+      if (event.key.length === 1) {
+        if (!buffer) startedAt = now;
+        buffer += event.key;
+        lastAt = now;
+      }
+    };
+
+    window.addEventListener("keydown", onWindowKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", onWindowKeyDown, true);
     };
   }, [isLoggedIn, needsTenantSelection]);
 
@@ -1151,6 +1398,15 @@ export default function App() {
                       error={ordersError}
                       filters={ordersFilters}
                       onFilterChange={setOrdersFilters}
+                      onLookupStorageLocation={handleLookupStorageLocation}
+                      onAssignStorageLocation={handleAssignStorageLocation}
+                      storageLocationStatus={storageLocationStatus}
+                      storageLocationStatusLoading={storageLocationStatusLoading}
+                      storageLocationStatusError={storageLocationStatusError}
+                      onRefreshStorageLocationStatus={() => {
+                        void loadStorageLocationStatus();
+                      }}
+                      autoScanSeed={ordersAutoScanSeed}
                       onPrintTag={(order) => {
                         void printOrderTag({
                           orderId: order.id,
@@ -1267,8 +1523,21 @@ export default function App() {
                         if (!orderDetailId) return;
                         try {
                           await markOrderPickedUp(orderDetailId);
+                          if (orderDetailSummary.location_barcode) {
+                            const clearLocation = await requestConfirmation({
+                              title: "Clear location?",
+                              description:
+                                "Pickup complete. Clear the stored location for this order?",
+                              confirmLabel: "Yes",
+                              cancelLabel: "No",
+                            });
+                            if (clearLocation) {
+                              await clearOrderStorageLocation(orderDetailId);
+                            }
+                          }
                           await loadOrderDetail(orderDetailId);
                           await loadOrders();
+                          void loadStorageLocationStatus();
                           toast({ title: "Order picked up." });
                         } catch (err) {
                           toast({
@@ -1508,6 +1777,37 @@ export default function App() {
           }
         }}
       />
+      <Dialog
+        open={confirmDialog.open}
+        onOpenChange={(open) => {
+          if (!open && confirmDialog.open) {
+            resolveConfirmation(false);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>{confirmDialog.title}</DialogTitle>
+            <DialogDescription>{confirmDialog.description}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => resolveConfirmation(false)}
+            >
+              {confirmDialog.cancelLabel}
+            </Button>
+            <Button
+              type="button"
+              variant={confirmDialog.confirmVariant}
+              onClick={() => resolveConfirmation(true)}
+            >
+              {confirmDialog.confirmLabel}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Toaster />
     </div>
   );

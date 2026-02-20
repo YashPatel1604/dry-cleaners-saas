@@ -1,6 +1,7 @@
 # orders/views.py
 from datetime import timedelta, datetime
 from datetime import timezone as dt_timezone
+import re
 
 
 from django.db import transaction
@@ -21,9 +22,10 @@ from customers.models import Customer, normalize_phone_us
 from payments.models import Payment, Adjustment
 from payments.serializers import PaymentSerializer
 from audit.models import AuditEvent
+from audit.utils import actor_from_request, emit_event
 from .services import recalc_order_totals, ReceiptPresenter, render_receipt_pdf, receipt_financials_for_order
 
-from .models import Order, OrderItem, OrderStatusEvent, OrderNote
+from .models import Order, OrderItem, OrderStatusEvent, OrderNote, StorageLocation
 from .serializers import (
     OrderSerializer,
     OrderItemSerializer,
@@ -36,6 +38,44 @@ from tenants.permissions import IsTenantMember
 from tenants.utils import parse_limit_offset
 from .utils import default_due_at_for_tenant
 from .utils import order_sku_for_order, order_id_from_sku
+
+LOCATION_BARCODE_RE = re.compile(r"^LOC-[A-Z0-9][A-Z0-9-]{0,30}$")
+ORDER_SCAN_BARCODE_RE = re.compile(r"^ORD-(\d{8})$")
+LOCATION_BARCODE_HINT = "Invalid location barcode. Expected format: LOC-<letters/numbers>."
+ORDER_BARCODE_HINT = "Invalid order barcode. Expected format: ORD-########."
+
+
+def parse_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def normalize_location_barcode(value: str) -> str | None:
+    raw = (value or "").strip().upper()
+    if not raw:
+        return None
+    if not LOCATION_BARCODE_RE.match(raw):
+        return None
+    return raw
+
+
+def parse_order_id_from_barcode(value: str) -> int | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    normalized = raw.upper()
+    match = ORDER_SCAN_BARCODE_RE.match(normalized)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 
@@ -77,8 +117,56 @@ class OrderViewSet(viewsets.ModelViewSet):
         # keep list/retrieve fast
         return (
             Order.objects.filter(tenant=self.request.tenant)
-            .select_related("customer")
+            .select_related("customer", "storage_location")
             .prefetch_related("payments", "adjustments")
+        )
+
+    def _storage_location_payload(self, order):
+        location = getattr(order, "storage_location", None)
+        return {
+            "order_id": order.id,
+            "order_sku": order_sku_for_order(order),
+            "location_barcode": getattr(location, "barcode", None),
+            "rack_number": getattr(location, "rack_number", None) or None,
+            "assigned_at": (
+                order.storage_assigned_at.isoformat()
+                if order.storage_assigned_at
+                else None
+            ),
+        }
+
+    def _storage_snapshot(self, order):
+        location = getattr(order, "storage_location", None)
+        return {
+            "location_barcode": getattr(location, "barcode", None),
+            "rack_number": getattr(location, "rack_number", None) or None,
+            "assigned_at": (
+                order.storage_assigned_at.isoformat()
+                if order.storage_assigned_at
+                else None
+            ),
+        }
+
+    def _emit_storage_audit_event(
+        self,
+        request,
+        *,
+        action: str,
+        order: Order,
+        before: dict,
+        after: dict,
+        metadata: dict | None = None,
+    ):
+        emit_event(
+            tenant=request.tenant,
+            request_id=getattr(request, "request_id", ""),
+            actor=actor_from_request(request),
+            action=action,
+            entity_type="order",
+            entity_id=order.id,
+            before=before,
+            after=after,
+            metadata=metadata or {},
         )
 
     def list(self, request, *args, **kwargs):
@@ -342,6 +430,332 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
         svg_bytes = drawing.asString("svg")
         return HttpResponse(svg_bytes, content_type="image/svg+xml")
+
+    @action(detail=False, methods=["post"], url_path="storage-locations/lookup")
+    def storage_location_lookup(self, request):
+        """
+        POST /api/orders/storage-locations/lookup/
+        Checks whether a location barcode is already known for this tenant.
+        """
+        barcode_raw = (request.data.get("barcode") or "").strip()
+        if not barcode_raw:
+            raise ValidationError({"barcode": "Required."})
+        barcode = normalize_location_barcode(barcode_raw)
+        if barcode is None:
+            raise ValidationError({"barcode": LOCATION_BARCODE_HINT})
+
+        location = StorageLocation.objects.filter(
+            tenant=request.tenant, barcode=barcode
+        ).first()
+
+        return Response(
+            {
+                "barcode": barcode,
+                "exists": bool(location),
+                "rack_number": (
+                    getattr(location, "rack_number", None) or None
+                    if location
+                    else None
+                ),
+            }
+        )
+
+    @action(detail=False, methods=["get"], url_path="storage-locations/status")
+    def storage_location_status(self, request):
+        """
+        GET /api/orders/storage-locations/status/
+        Returns all tenant locations with occupancy state and current order SKU.
+        Optional query params:
+        - q: filter by location barcode or rack number
+        - occupied: true/false
+        """
+        query = (request.query_params.get("q") or "").strip()
+        occupied_filter = request.query_params.get("occupied")
+
+        locations_qs = StorageLocation.objects.filter(tenant=request.tenant)
+        if query:
+            locations_qs = locations_qs.filter(
+                Q(barcode__icontains=query) | Q(rack_number__icontains=query)
+            )
+
+        locations = list(locations_qs.order_by("rack_number", "barcode", "id"))
+        if not locations:
+            return Response({"count": 0, "results": []})
+
+        location_ids = [location.id for location in locations]
+        assigned_orders = (
+            Order.objects.filter(
+                tenant=request.tenant,
+                storage_location_id__in=location_ids,
+            )
+            .select_related("storage_location")
+        )
+
+        assigned_by_location_id = {}
+        for assigned_order in assigned_orders:
+            location_id = assigned_order.storage_location_id
+            previous = assigned_by_location_id.get(location_id)
+            if previous is None:
+                assigned_by_location_id[location_id] = assigned_order
+                continue
+
+            previous_key = (
+                previous.storage_assigned_at or previous.created_at,
+                previous.id,
+            )
+            candidate_key = (
+                assigned_order.storage_assigned_at or assigned_order.created_at,
+                assigned_order.id,
+            )
+            if candidate_key > previous_key:
+                assigned_by_location_id[location_id] = assigned_order
+
+        only_occupied = None
+        if occupied_filter is not None:
+            only_occupied = occupied_filter.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "y",
+                "on",
+            }
+
+        results = []
+        for location in locations:
+            assigned_order = assigned_by_location_id.get(location.id)
+            is_occupied = assigned_order is not None
+            if only_occupied is not None and is_occupied != only_occupied:
+                continue
+
+            results.append(
+                {
+                    "location_barcode": location.barcode,
+                    "rack_number": location.rack_number or None,
+                    "occupied": is_occupied,
+                    "current_order_id": assigned_order.id if assigned_order else None,
+                    "current_order_sku": (
+                        order_sku_for_order(assigned_order)
+                        if assigned_order
+                        else None
+                    ),
+                    "current_order_status": (
+                        assigned_order.status if assigned_order else None
+                    ),
+                    "assigned_at": (
+                        assigned_order.storage_assigned_at.isoformat()
+                        if assigned_order and assigned_order.storage_assigned_at
+                        else None
+                    ),
+                }
+            )
+
+        return Response({"count": len(results), "results": results})
+
+    @action(detail=False, methods=["post"], url_path="storage-locations/assign")
+    def storage_location_assign(self, request):
+        """
+        POST /api/orders/storage-locations/assign/
+        Assigns an order to a location barcode (and optional rack number).
+        """
+        location_barcode_raw = (request.data.get("location_barcode") or "").strip()
+        order_barcode = (request.data.get("order_barcode") or "").strip().upper()
+        rack_number = (request.data.get("rack_number") or "").strip()
+        force_clear = parse_bool(request.data.get("force_clear"), default=False)
+
+        if not location_barcode_raw:
+            raise ValidationError({"location_barcode": "Required."})
+        location_barcode = normalize_location_barcode(location_barcode_raw)
+        if location_barcode is None:
+            raise ValidationError({"location_barcode": LOCATION_BARCODE_HINT})
+        if not order_barcode:
+            raise ValidationError({"order_barcode": "Required."})
+        if len(rack_number) > 20:
+            raise ValidationError({"rack_number": "Must be 20 characters or fewer."})
+
+        order_id = parse_order_id_from_barcode(order_barcode)
+        if order_id is None:
+            raise ValidationError({"order_barcode": ORDER_BARCODE_HINT})
+
+        with transaction.atomic():
+            order = (
+                Order.objects.select_for_update()
+                .filter(tenant=request.tenant, pk=order_id)
+                .first()
+            )
+            if not order:
+                raise ValidationError(
+                    {"order_barcode": "Order not found in this tenant."}
+                )
+            before_order_snapshot = self._storage_snapshot(order)
+
+            location, created = StorageLocation.objects.select_for_update().get_or_create(
+                tenant=request.tenant,
+                barcode=location_barcode,
+                defaults={"rack_number": rack_number},
+            )
+
+            previous_rack_number = location.rack_number or None
+            if rack_number and rack_number != (location.rack_number or ""):
+                location.rack_number = rack_number
+                location.save(update_fields=["rack_number", "updated_at"])
+            rack_number_changed = previous_rack_number != (location.rack_number or None)
+
+            occupied_qs = (
+                Order.objects.select_for_update()
+                .filter(tenant=request.tenant, storage_location=location)
+                .exclude(pk=order.id)
+                .order_by("created_at", "id")
+            )
+            occupied_orders = list(occupied_qs)
+            occupied_order = occupied_orders[0] if occupied_orders else None
+
+            if occupied_order and not force_clear:
+                return Response(
+                    {
+                        "code": "storage_location_occupied",
+                        "detail": "Rack already full.",
+                        "location_barcode": location.barcode,
+                        "rack_number": location.rack_number or None,
+                        "current_order_id": occupied_order.id,
+                        "current_order_sku": order_sku_for_order(occupied_order),
+                    },
+                    status=409,
+                )
+
+            cleared_orders = 0
+            if occupied_orders and force_clear:
+                for occupied in occupied_orders:
+                    before_cleared_snapshot = self._storage_snapshot(occupied)
+                    occupied.storage_location = None
+                    occupied.storage_assigned_at = None
+                    occupied.save(
+                        update_fields=["storage_location", "storage_assigned_at"]
+                    )
+                    after_cleared_snapshot = self._storage_snapshot(occupied)
+                    self._emit_storage_audit_event(
+                        request,
+                        action="storage_location.evicted",
+                        order=occupied,
+                        before=before_cleared_snapshot,
+                        after=after_cleared_snapshot,
+                        metadata={
+                            "reason": "force_clear",
+                            "reassigned_to_order_id": order.id,
+                            "reassigned_to_order_sku": order_sku_for_order(order),
+                            "location_barcode": location.barcode,
+                            "rack_number": location.rack_number or None,
+                        },
+                    )
+                    cleared_orders += 1
+
+            order.storage_location = location
+            order.storage_assigned_at = timezone.now()
+            order.save(update_fields=["storage_location", "storage_assigned_at"])
+            after_order_snapshot = self._storage_snapshot(order)
+            self._emit_storage_audit_event(
+                request,
+                action="storage_location.assigned",
+                order=order,
+                before=before_order_snapshot,
+                after=after_order_snapshot,
+                metadata={
+                    "force_clear": force_clear,
+                    "location_created": created,
+                    "location_barcode": location.barcode,
+                    "rack_number": location.rack_number or None,
+                    "order_barcode": order_barcode,
+                    "rack_number_changed": rack_number_changed,
+                    "rack_number_before": previous_rack_number,
+                    "rack_number_after": location.rack_number or None,
+                },
+            )
+
+        payload = self._storage_location_payload(order)
+        payload["location_created"] = created
+        payload["cleared_orders"] = cleared_orders
+        return Response(payload, status=200)
+
+    @action(detail=True, methods=["get"], url_path="storage-location")
+    def storage_location(self, request, pk=None):
+        """
+        GET /api/orders/{id}/storage-location/
+        Returns current location assignment for an order.
+        """
+        order = self.get_object()
+        return Response(self._storage_location_payload(order))
+
+    @action(detail=True, methods=["get"], url_path="storage-location/history")
+    def storage_location_history(self, request, pk=None):
+        """
+        GET /api/orders/{id}/storage-location/history/
+        Returns assignment/clear history with actor + before/after snapshots.
+        """
+        order = self.get_object()
+        events_qs = (
+            AuditEvent.objects.filter(
+                tenant=request.tenant,
+                entity_type="order",
+                entity_id=str(order.id),
+                action__startswith="storage_location.",
+            )
+            .order_by("-created_at")
+        )
+
+        limit, offset = parse_limit_offset(request, default_limit=50, max_limit=200)
+        if limit is not None:
+            events_qs = events_qs[offset: offset + limit]
+
+        events = [
+            {
+                "id": str(event.id),
+                "created_at": event.created_at.isoformat() if event.created_at else None,
+                "action": event.action,
+                "actor_type": event.actor_type,
+                "actor_id": event.actor_id,
+                "actor_label": event.actor_label,
+                "request_id": event.request_id,
+                "before": event.before or {},
+                "after": event.after or {},
+                "metadata": event.metadata or {},
+            }
+            for event in events_qs
+        ]
+        return Response({"order_id": order.id, "count": len(events), "events": events})
+
+    @action(detail=True, methods=["post"], url_path="storage-location/clear")
+    def clear_storage_location(self, request, pk=None):
+        """
+        POST /api/orders/{id}/storage-location/clear/
+        Clears current location assignment.
+        """
+        with transaction.atomic():
+            order = (
+                Order.objects.select_for_update()
+                .filter(tenant=request.tenant, pk=pk)
+                .first()
+            )
+            if not order:
+                raise ValidationError({"order": "Order not found in this tenant."})
+
+            before_snapshot = self._storage_snapshot(order)
+            order.storage_location = None
+            order.storage_assigned_at = None
+            order.save(update_fields=["storage_location", "storage_assigned_at"])
+            after_snapshot = self._storage_snapshot(order)
+            if (
+                before_snapshot["location_barcode"] is not None
+                or before_snapshot["assigned_at"] is not None
+            ):
+                self._emit_storage_audit_event(
+                    request,
+                    action="storage_location.cleared",
+                    order=order,
+                    before=before_snapshot,
+                    after=after_snapshot,
+                    metadata={"reason": "manual_clear"},
+                )
+
+        return Response(self._storage_location_payload(order))
 
     @action(detail=True, methods=["post"], url_path="pickup-payment")
     def pickup_payment(self, request, pk=None):
@@ -627,9 +1041,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         # If tenant requires full payment, allow_balance_due defaults to False
         # If tenant does NOT require full payment, allow_balance_due defaults to True
         default_allow = (not tenant_requires_full)
-
-        allow_balance_due = bool(request.data.get(
-            "allow_balance_due", default_allow))
+        allow_balance_due = parse_bool(
+            request.data.get("allow_balance_due"), default=default_allow
+        )
+        clear_location = parse_bool(request.data.get("clear_location"), default=False)
 
         order = (
             Order.objects.filter(tenant=request.tenant, pk=pk)
@@ -647,6 +1062,27 @@ class OrderViewSet(viewsets.ModelViewSet):
 
             # ✅ idempotency: if already picked up, return current state
         if order.status == "PICKED_UP":
+            if clear_location and (
+                order.storage_location_id is not None or order.storage_assigned_at is not None
+            ):
+                with transaction.atomic():
+                    locked = Order.objects.select_for_update().get(
+                        pk=order.pk, tenant=request.tenant
+                    )
+                    before_snapshot = self._storage_snapshot(locked)
+                    locked.storage_location = None
+                    locked.storage_assigned_at = None
+                    locked.save(update_fields=["storage_location", "storage_assigned_at"])
+                    after_snapshot = self._storage_snapshot(locked)
+                    self._emit_storage_audit_event(
+                        request,
+                        action="storage_location.cleared",
+                        order=locked,
+                        before=before_snapshot,
+                        after=after_snapshot,
+                        metadata={"reason": "pickup_clear"},
+                    )
+                order.refresh_from_db()
             resp = Response(OrderSerializer(order).data, status=200)
             resp["Idempotent-Replay"] = "true"
             return resp
@@ -687,7 +1123,30 @@ class OrderViewSet(viewsets.ModelViewSet):
             if locked.picked_up_at is None:
                 locked.picked_up_at = now
 
-            locked.save(update_fields=["status", "picked_up_at"])
+            update_fields = ["status", "picked_up_at"]
+            before_snapshot = self._storage_snapshot(locked)
+            if clear_location:
+                locked.storage_location = None
+                locked.storage_assigned_at = None
+                update_fields.extend(["storage_location", "storage_assigned_at"])
+
+            locked.save(update_fields=update_fields)
+            after_snapshot = self._storage_snapshot(locked)
+            if (
+                clear_location
+                and (
+                    before_snapshot["location_barcode"] is not None
+                    or before_snapshot["assigned_at"] is not None
+                )
+            ):
+                self._emit_storage_audit_event(
+                    request,
+                    action="storage_location.cleared",
+                    order=locked,
+                    before=before_snapshot,
+                    after=after_snapshot,
+                    metadata={"reason": "pickup_clear"},
+                )
 
             OrderStatusEvent.objects.create(
                 tenant=request.tenant,
@@ -1070,6 +1529,9 @@ class OrderViewSet(viewsets.ModelViewSet):
             priority = {
                 "order.created": 10,
                 "status.change": 20,
+                "storage_location.assigned": 22,
+                "storage_location.cleared": 23,
+                "storage_location.evicted": 24,
                 "note.added": 25,
                 "payment.created": 30,
                 "payment.voided": 31,
@@ -1140,7 +1602,72 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "meta": {"note": n.note or ""},
             }))
 
-        # 4) Payments
+        # 4) Storage assignment/clear events
+        storage_events = (
+            AuditEvent.objects
+            .filter(
+                tenant=request.tenant,
+                entity_type="order",
+                entity_id=str(order.id),
+                action__startswith="storage_location.",
+            )
+            .order_by("created_at")
+        )
+        for event in storage_events:
+            meta = event.metadata or {}
+            before = event.before or {}
+            after = event.after or {}
+
+            if event.action == "storage_location.assigned":
+                title = "Storage assigned"
+                location_barcode = after.get("location_barcode") or meta.get("location_barcode")
+                rack_number = after.get("rack_number") or meta.get("rack_number")
+                summary = location_barcode or "Location assigned"
+                if rack_number:
+                    summary = f"{summary} (Rack {rack_number})"
+            elif event.action == "storage_location.cleared":
+                title = "Storage cleared"
+                cleared_location = (
+                    before.get("location_barcode")
+                    or meta.get("location_barcode")
+                    or "Location"
+                )
+                summary = f"{cleared_location} cleared"
+            else:
+                title = "Storage replaced"
+                replaced_sku = meta.get("reassigned_to_order_sku")
+                summary = (
+                    f"Cleared for {replaced_sku}"
+                    if replaced_sku
+                    else "Cleared for reassignment"
+                )
+
+            events.append(normalize_event({
+                "id": f"storage:{event.id}",
+                "at": event.created_at,
+                "kind": event.action,
+                "title": title,
+                "summary": summary,
+                "actor": {
+                    "type": event.actor_type,
+                    "id": event.actor_id,
+                    "label": event.actor_label or "system",
+                },
+                "amount": None,
+                "refs": {
+                    "order_id": order.id,
+                    "status_event_id": None,
+                    "payment_id": None,
+                    "adjustment_id": None,
+                },
+                "meta": {
+                    "before": before,
+                    "after": after,
+                    **meta,
+                },
+            }))
+
+        # 5) Payments
         payments = (
             Payment.objects
             .filter(tenant=request.tenant, order=order)
@@ -1170,7 +1697,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 },
             }))
 
-        # 5) Adjustments
+        # 6) Adjustments
         adjustments = (
             Adjustment.objects
             .filter(tenant=request.tenant, order=order)
@@ -1200,7 +1727,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 },
             }))
 
-        # 6) Settlement snapshot (derived)
+        # 7) Settlement snapshot (derived)
         if order.settled_at is not None:
             events.append(normalize_event({
                 "id": f"order:{order.id}:settlement",
